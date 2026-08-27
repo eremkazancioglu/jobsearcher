@@ -248,11 +248,11 @@ cost, bounded), `title_only` (optional phrase restricted to matching the
 posting's title specifically, on top of `what`'s full-text match), and
 `full_time` (`1` to filter to full-time postings only, `0` for no filter --
 defaults to `1`, confirmed to meaningfully change the result count in
-practice). See the throwaway `explore_adzuna.py` script already run
-against this account for the actual response shape — build against real
-observed fields, not assumptions. Keep the attribution and rate-limit
-notes above in mind: this should run once or a few times a day, not in a
-tight loop.
+practice). Built against the real observed response shape (see
+`models/schema.py`'s `AdzunaResult`), not assumptions -- the exploration
+script this was originally verified against has since been deleted, its
+job done. Keep the attribution and rate-limit notes above in mind: this
+should run once or a few times a day, not in a tight loop.
 
 **`salary_min` must be serialized as a plain integer.** Adzuna's API
 returns a 400 if `salary_min` is serialized with a decimal point (e.g.
@@ -944,8 +944,9 @@ the workflow needs `permissions: contents: write` to commit STATUS.json.
 **Phase 1:**
 1. `db/schema.sql` + `models/schema.py` -- get the contract right first.
 2. `mcp_servers/job_sources/server.py` -- the Adzuna search tool, tested
-   standalone (see the throwaway `explore_adzuna.py` exploration script
-   for the actual response shape before wiring it into MCP).
+   standalone (verified against a throwaway exploration script for the
+   actual response shape before wiring it into MCP; since deleted, its
+   job done -- see `models/schema.py`'s `AdzunaResult` instead).
 3. `agents/discovery.py` -- Adzuna search, writing raw rows.
 4. `agents/fetchers.py` (plain fetch -> Playwright -> fallback search ->
    degrade) wired into discovery so every written row has its best-effort

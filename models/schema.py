@@ -29,8 +29,9 @@ class AdzunaResult(BaseModel):
 
     Adzuna nests company/location as {"display_name": ...} objects and
     returns salary_is_predicted as the string "1"/"0" rather than a bool --
-    both flattened/coerced here so the rest of the app works with plain
-    values. See explore_adzuna.py for the real observed response shape.
+    both flattened/coerced here (see the validators below) so the rest of
+    the app works with plain values, built against the real observed
+    response shape rather than assumptions.
     """
 
     external_id: str = Field(alias="id")
