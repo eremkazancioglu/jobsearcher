@@ -37,12 +37,12 @@ def insert_posting(posting: Posting) -> None:
                 insert into postings (
                     source, external_id, title, company, location, url,
                     description, description_source, salary_min, salary_max,
-                    salary_is_predicted
+                    salary_is_predicted, work_location
                 ) values (
                     %(source)s, %(external_id)s, %(title)s, %(company)s,
                     %(location)s, %(url)s, %(description)s,
                     %(description_source)s, %(salary_min)s, %(salary_max)s,
-                    %(salary_is_predicted)s
+                    %(salary_is_predicted)s, %(work_location)s
                 )
                 """,
                 posting.model_dump(
@@ -58,6 +58,7 @@ def insert_posting(posting: Posting) -> None:
                         "salary_min",
                         "salary_max",
                         "salary_is_predicted",
+                        "work_location",
                     }
                 ),
             )

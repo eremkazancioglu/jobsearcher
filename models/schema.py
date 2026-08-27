@@ -13,6 +13,7 @@ from uuid import UUID
 from pydantic import BaseModel, Field, field_validator
 
 DescriptionSource = Literal["adzuna_snippet", "redirect_url", "company_site"]
+WorkLocation = Literal["remote", "hybrid", "onsite"]
 MatchCategory = Literal["strong", "mixed", "weak"]
 ApplicationStatus = Literal[
     "not_applied", "applied", "interviewing", "rejected", "offer", "withdrawn"
@@ -80,6 +81,7 @@ class Posting(BaseModel):
     salary_min: Optional[Decimal] = None
     salary_max: Optional[Decimal] = None
     salary_is_predicted: Optional[bool] = None
+    work_location: Optional[WorkLocation] = None
     match_category: Optional[MatchCategory] = None
     match_notes: Optional[str] = None
     discovered_at: Optional[datetime] = None

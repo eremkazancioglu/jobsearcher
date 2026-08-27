@@ -63,6 +63,10 @@ create table postings (
     salary_min numeric,
     salary_max numeric,
     salary_is_predicted boolean,           -- see "salary precedence" in Phase 1
+    work_location text                     -- 'remote' from Adzuna's own REMOTE
+        check (work_location is null       -- badge when present (deterministic),
+            or work_location in            -- else an LLM classification of the
+                ('remote','hybrid','onsite')), -- JD text, else null if neither says
     match_category text
         check (match_category is null or match_category in ('strong','mixed','weak')),
     match_notes text,                      -- one-line reason from the categorization agent
@@ -240,11 +244,87 @@ integrations (see below for why). All of these are Phase 2.
 `app_id`, `app_key`, `what` (keyword), `where` (location), `salary_min`,
 `max_days_old` (defaults to 14 -- keeps discovery focused on postings
 still worth applying to, and keeps result volume, and therefore capture
-cost, bounded). See the throwaway `explore_adzuna.py` script already run
+cost, bounded), `title_only` (optional phrase restricted to matching the
+posting's title specifically, on top of `what`'s full-text match), and
+`full_time` (`1` to filter to full-time postings only, `0` for no filter --
+defaults to `1`, confirmed to meaningfully change the result count in
+practice). See the throwaway `explore_adzuna.py` script already run
 against this account for the actual response shape — build against real
 observed fields, not assumptions. Keep the attribution and rate-limit
 notes above in mind: this should run once or a few times a day, not in a
 tight loop.
+
+**`salary_min` must be serialized as a plain integer.** Adzuna's API
+returns a 400 if `salary_min` is serialized with a decimal point (e.g.
+`180000.0`) -- confirmed in practice, including via `requests` sending a
+Python `float` exactly as `str()` renders it -- and accepts the identical
+value serialized as an int (`180000`) with no error. `_search_params()` in
+`mcp_servers/job_sources/server.py` casts `int(salary_min)` at the API
+boundary so callers (CLI args, MCP tool inputs) can still pass a float
+without needing to know this.
+
+**Transient 5xx errors are retried, 4xx are not.** Confirmed in practice:
+a `503 Service Temporarily Unavailable` on a completely ordinary request
+(no bad params -- retrying the exact same request moments later returned
+`200` three times in a row). `_get_with_retry()` in
+`mcp_servers/job_sources/server.py` retries `{500,502,503,504}` up to 3
+attempts total with linear backoff (1s, 2s), used by both `adzuna_search`
+and `adzuna_count`. A 4xx is never retried -- that means something's
+actually wrong with the request (e.g. the `salary_min` float-serialization
+bug above), and retrying it would just burn API budget repeating the same
+failure instead of surfacing it.
+
+**Count without capturing.** Adzuna's response includes a `count` field --
+the *true total* number of matching postings, independent of
+`results_per_page` -- confirmed to still populate correctly even with
+`results_per_page=0`, so getting it costs one cheap API hit with zero
+job listings actually transferred. Exposed as its own MCP tool,
+`adzuna_count`, separate from `adzuna_search` rather than piggybacked onto
+it, since "how many matches" and "give me the postings" are genuinely
+different operations with different costs. `discovery.py --count-only`
+calls this and exits before touching the DB or the capture pipeline at
+all -- useful for sanity-checking a query's volume before committing to a
+real (costed) run against it.
+
+**List without capturing.** `discovery.py --list-only` runs the same
+paginated search as the normal path (see "Pagination" below) and logs
+each result's title and company, then exits -- skipping the dedup check,
+tier 1-3 capture, and the DB write entirely. No new MCP tool needed here
+(unlike `--count-only`): it's the same search `discovery.py`'s normal
+path already makes, just stopping before the per-posting loop that would
+otherwise capture and write each one. Useful for eyeballing what a query
+actually returns before spending real capture cost on it.
+
+**Pagination.** A single `adzuna_search` call only ever returns one page
+(bounded by `results_per_page`, `page` defaulting to 1) -- there's no "give
+me everything" mode on the API itself. `discovery.py`'s `fetch_all_pages()`
+loops pages until either a page comes back shorter than
+`--results-per-page` (the actual last page) or `--max-pages` (default 5)
+is hit, whichever comes first. `--max-pages` exists specifically because
+each page is one rate-limited Adzuna hit against a 250/day cap (see above)
+-- an unbounded "fetch every page" loop on a broad query (tens of
+thousands of matches) would blow through that in a single run. Coverage is
+never silently capped: `fetch_all_pages()` calls `adzuna_count()` first
+(one cheap extra hit) and logs explicitly when `--max-pages` means some
+matches weren't fetched, e.g. "Covered 15 of 23 ... 8 beyond
+--max-pages=3 were not fetched" -- same "no silent caps" pattern as tier
+3's candidate walk in `fetchers.py`. For an eventual scheduled/automated
+run: narrow the query (`--title-only`, a tight `--max-days-old`) so the
+true match count stays small enough that `--max-pages` covers it
+completely, rather than relying on a large `--max-pages` to brute-force
+coverage of a broad query -- narrowing the query is what keeps daily API
+hits and per-posting capture cost bounded, pagination alone doesn't.
+
+**`--count-only` checks capacity too, not just the total.** Since it's the
+natural pre-flight check before a real run (and especially before a
+scheduled one -- confirm the query stays narrow before automating it),
+`_log_capacity_warning()` compares the count against
+`--results-per-page x --max-pages` and logs explicitly when the *current
+settings* wouldn't cover it -- this is an estimate (no pages are actually
+fetched in `--count-only` mode), cross-checked for real once
+`fetch_all_pages()` actually walks pages during a real run. Confirmed in
+practice: silent for a narrow, single-day query (16 matches vs. 100
+capacity), logs a clear warning for a broad one (1,845 vs. 100).
 
 ### Skip already-seen postings before capture
 
@@ -262,16 +342,56 @@ tier 1-3 capture flow below.
 
 ### 2. Full posting capture
 
-Build this as fetch tiers with an LLM doing the judgment calls, not
+Tier 3 is built as fetch tiers with an LLM doing the judgment calls, not
 hand-written parsing — hand-rolled HTML selectors or string-matching will
-break across the wide variety of site structures this will hit, and
-"is this the same posting" / "extract the salary and description from this
-page" are exactly the kind of fuzzy judgment an LLM handles well and
-brittle heuristics don't.
+break across the wide variety of *external* site structures tier 3 hits,
+and "is this the same posting" / "extract the salary and description from
+this page" are exactly the kind of fuzzy judgment an LLM handles well and
+brittle heuristics don't. Tier 1/2 is the deliberate exception to that
+rule: it's a single, known, stable target (Adzuna's own page), not an
+arbitrary site, so a targeted structural extraction there is a legitimate,
+bounded case rather than the kind of brittle guesswork this principle
+warns against — see the JSON-LD bullet under tier 1 below for why that
+distinction holds and what was verified before relying on it.
 
 - **Tier 1 — redirect_url, plain fetch.** Cheap, works for a meaningful
   chunk of postings (server-rendered sites, or a redirect that already
   lands on a plain-text-ish page).
+  - **Adzuna URL normalization, applied before the fetch.** Adzuna's own
+    `redirect_url` often comes back as
+    `adzuna.com/land/ad/{id}?{query}` -- a landing/tracking page with real
+    bot-protection that blocks both plain fetch (403) and tier 2's headless
+    render ("Access Denied... suspicious behaviour"), confirmed in practice
+    on multiple postings, including ones that would otherwise need the full
+    tier 3 search. Adzuna also serves the exact same posting directly at
+    `adzuna.com/details/{id}?{query}` -- same query string, no gate --
+    confirmed in practice across several postings, including ones tier 1/2
+    couldn't otherwise touch at all. So: rewrite `land/ad` to `details` in
+    the URL (regex on the path only, query string untouched) before
+    attempting tier 1, and use the result -- not the original -- as `url`
+    if capture succeeds via this path. Any URL not matching that exact
+    pattern (including every tier 3 candidate, which is never adzuna.com in
+    the first place) passes through unchanged.
+  - **Tier 1/2's extraction is deterministic, not LLM-judged.** Adzuna's
+    `/details/{id}` page (after normalization) embeds a `JobPosting`
+    JSON-LD block with a clean, already-isolated `description` field --
+    confirmed by fetching real posting pages directly and inspecting the
+    raw HTML, not assumed. `_extract_metadata_text()` (originally built for
+    Workday's JS-shell case) already pulls this out; `capture()` uses its
+    presence, unmerged with anything else, directly as `full_description`
+    for tier 1/2 -- no `_confirm_and_extract`/LLM call at all on this path.
+    Its *absence* doubles as the validity gate that an LLM `gated` judgment
+    used to provide: confirmed in practice on a posting that expired
+    between two points in this same investigation -- the *visible* page
+    still looked like a plausible, current listing, but the `JobPosting`
+    JSON-LD node was gone. That's a more reliable signal than judging
+    visible text would have been, not just a cheaper one. No salary
+    detection happens on this path either (see "Salary detection is tier
+    3-only" below) and no identity check happens either, since there's no
+    "which posting is this" ambiguity on a page Adzuna serves directly by
+    this exact posting's own ID, only whether the JobPosting node exists at
+    all. If it's absent or too short, `capture()` falls through to tier 3
+    exactly as if tier 1/2 had failed any other way.
 - **Tier 2 — redirect_url, headless render (Playwright/Chromium)** if the
   plain fetch's text is suspiciously short. A lot of modern career sites
   only populate the description via client-side JavaScript that a plain
@@ -280,59 +400,157 @@ brittle heuristics don't.
   text *or* when the page is clearly a login/paywall (e.g. a login form
   where content should be, an auth redirect, a "sign in to view" message —
   worth having the LLM judge this directly from the fetched content rather
-  than hardcoding site-specific detection). Search for the company's
-  careers page (e.g. "{company} careers" or "{company} jobs"), fetch/render
-  it the same two-tier way, and if it has its own listing or search
-  interface, use it to get to the specific role.
-- **Confirmation step:** once a candidate page is found (tier 1, 2, or 3),
-  have the agent judge whether it's actually the same posting Adzuna
-  described — compare against Adzuna's title, description snippet, and
-  location — before trusting its extracted content. Careers pages often
-  list many roles; landing on the page isn't the same as landing on the
-  right posting.
-- **Extraction:** an LLM call over the confirmed page's text, asked to
-  pull out the full job description and, separately, whether the JD
-  itself states a salary or range — as an explicit found/not-found signal
-  the call returns, not something inferred later from whether a number
-  happens to come back non-null.
+  than hardcoding site-specific detection). Two separate steps, not one
+  agentic loop doing both:
+  - **Search** — a single, plain web search for `"{title} {company}"`, the
+    same kind of query a person would type by hand. Deliberately *not*
+    "{company} careers" plus browsing around the careers site, and
+    deliberately one query, not a sharpened retry: the Adzuna snippet is
+    generic opening boilerplate with nothing distinctive enough to sharpen
+    a second query with anyway. This step is mechanical retrieval — a
+    ranked list of result URLs — not a judgment call, so it must be a
+    single constrained tool call (search only, no fetching/browsing/
+    evaluating), not a multi-turn agentic loop.
+  - **Candidate walk** — fetch each result URL, in ranking order, through
+    the *same* tiered fetch used for `redirect_url` (tier 1 plain fetch,
+    escalating to tier 2's headless render if the text looks too thin).
+    Stop at the first candidate whose page passes the confirmation step
+    below. This reuses tier 1/2's fetch logic and the confirmation step
+    rather than duplicating either — in particular, the model must never be
+    asked to reproduce a page's full text as structured output; letting it
+    verbatim-echo a JD as output tokens is expensive and unreliable
+    (fetching inside an agentic tool call also can't render JavaScript, so
+    a client-rendered career site just comes back as an empty loading
+    shell regardless of how good the search was). If no candidate passes,
+    this degrades the same way tier 1/2 failing does — keep the Adzuna
+    snippet, don't block the pipeline.
+  - **Candidate cap** (`MAX_FALLBACK_CANDIDATES`, currently 10 — raised
+    from an initial 5, see "Cost controls" below for why) — walking
+    unboundedly many search results would mean unboundedly many
+    fetch+confirm calls per posting; capped for the same cost reasons as
+    the rest of this section.
+- **Confirmation and extraction, in a single LLM call -- tier 3 only.**
+  Once a tier 3 candidate page is found, one call judges whether it's
+  actually the same posting Adzuna described (comparing against Adzuna's
+  title, description snippet, and location — careers pages often list
+  many roles, so landing on the page isn't the same as landing on the
+  right posting) *and*, if so, extracts the full job description plus
+  whether the JD itself states a salary or range — as an explicit
+  found/not-found signal the call returns, not something inferred later
+  from whether a number happens to come back non-null. This started as
+  two separate calls (confirm, then extract) and was deliberately merged
+  into one: both operate on the same page text, so splitting them only
+  doubled the LLM round-trips for no benefit — the model is told to leave
+  the extraction fields empty/false when the page fails confirmation
+  rather than guess. Revisit this if Phase 2's categorization step ends up
+  wanting a from-scratch look at whether merging trades away too much
+  per-step clarity — noted as a live open question, not a settled
+  non-issue. This step doesn't run at all for tier 1/2 -- see the JSON-LD
+  bullet under tier 1 above, which replaced it (identity check included:
+  a search result or external careers page can genuinely show any of
+  several roles, which is exactly the ambiguity Adzuna's own ID-keyed page
+  doesn't have).
+- **Page text includes metadata, not just what's visibly rendered -- and
+  this is now doing double duty.** Some career sites (Workday-hosted ones,
+  confirmed in practice) embed the full JD in a `JobPosting` JSON-LD block
+  server-side for SEO, even though the visible page is a JS-rendered shell
+  until the client app loads. Originally built for tier 3 candidates on
+  those sites (pulling this in alongside the rendered visible text meant
+  tier 1's plain fetch could pick up the real JD without needing tier 2's
+  render), the exact same mechanism turned out to be what Adzuna's own
+  `/details/{id}` page uses too -- which is what tier 1/2's deterministic
+  extraction (above) is actually built on top of. Not a coincidence worth
+  re-deriving if this code is touched again: `_extract_metadata_text()` is
+  one function serving both call sites.
+- **Visible text is main-content-extracted, not just script/style-stripped.**
+  `trafilatura` (general content-density heuristics, not site-specific
+  rules -- same "don't hardcode site structure" reasoning as everywhere
+  else in this section) drops nav/menus/cookie banners/footers/"related
+  jobs" widgets before the LLM ever sees the text. Confirmed in practice: a
+  ~34% cost reduction on a real posting, comparing this against the old
+  whole-page-text approach on identical input, via directly measured
+  `total_cost_usd` -- not just a smaller character count (which doesn't
+  reliably predict cost; on at least one real page trafilatura's output
+  was *longer* than the naive approach, because it restructures list-style
+  metadata that flat-text extraction mangles, and it still costs less to
+  process). Falls back to the old whole-page approach when trafilatura
+  finds no extractable "main content" at all (e.g. a near-empty JS-shell
+  page) so nothing is silently lost -- confirmed this still recovers
+  correctly on the Workday-shell case above, since that case's real
+  content comes from the JSON-LD metadata pass either way.
 - **Graceful degrade:** if nothing above works, keep Adzuna's snippet
   (`description_source = 'adzuna_snippet'`) rather than blocking on a page
   that won't cooperate. Let the human glance at the original
   `redirect_url` themselves in the rare case it's worth it.
 
 **Cost controls on the LLM calls.** An early Phase 1 test run burned ~5% of
-a $25 API budget on a single posting before these existed -- tier 3 is a
-multi-turn agentic loop (web search + fetch tool calls) and, left
-unbounded on model choice/turns/spend, gets expensive fast, especially
-since a meaningful fraction of postings hit tier 3 in practice (Adzuna's
-own `/land/ad/` redirect pages frequently don't resolve to the real
-posting on a plain fetch). All three LLM calls (confirm, extract, tier 3's
-fallback search) must set:
+a $25 API budget on a single posting before these existed -- tier 3's
+original design was a single multi-turn agentic loop doing search, browsing,
+fetching, and full-page-text reproduction all in one call, and left
+unbounded on model choice/turns/spend, that got expensive fast, especially
+since a meaningful fraction of postings hit tier 3 in practice (Adzuna's own
+`/land/ad/` redirect pages frequently don't resolve to the real posting on a
+plain fetch). Splitting tier 3 into a plain single-query search (mechanical
+retrieval) plus a candidate walk over the *existing* tiered fetch and
+confirmation logic (see tier 3 above) removes most of that cost by
+construction -- no LLM call ever reproduces a full page's text as output
+tokens anymore. The biggest single reduction came later, though: **tier
+1/2 makes zero LLM calls at all now** (see the JSON-LD deterministic
+extraction under tier 1 above) -- confirmed directly (not estimated) by
+running a real capture end-to-end and reading `get_total_cost_usd()`
+before and after: `$0.00` for a posting that resolved via tier 1/2, versus
+real Haiku cost on the same posting before that change. Every posting
+that resolves via tier 1/2 -- the common case, especially post-URL-
+normalization -- now costs nothing in LLM spend at all; only tier 3
+candidates still make LLM calls. Confirm and extract are also merged into
+one call rather than two on that remaining tier 3 path (see "Confirmation
+and extraction" above), halving the LLM round-trips for every candidate
+that reaches it. The remaining LLM calls (tier 3's confirm+extract, tier
+3's search) still all set:
 - **Model: Haiku** (currently `claude-haiku-4-5-20251001`), not whatever
   the CLI defaults to. These are narrow judgment/lookup tasks -- same-page
-  confirmation, text extraction, "find this company's careers page" -- not
+  confirmation, text extraction, reporting back search result URLs -- not
   tasks that need a frontier model's reasoning.
 - **A hard per-call budget cap** (`max_budget_usd`, currently `0.15`) so
-  one runaway agentic loop (tier 3 chasing dead-end searches) can't blow
-  through real money. The SDK stops the query and returns an
-  `error_max_budget_usd` result when hit -- treat that exactly like any
-  other failed capture attempt (graceful degrade, not a crash).
-- **A capped turn budget on tier 3** (`max_turns`, currently `8`) --
-  confirm/extract are single-turn and don't need this, but tier 3's
-  search-then-fetch loop does.
+  one runaway call can't blow through real money. The SDK stops the query
+  and returns an `error_max_budget_usd` result when hit -- treat that
+  exactly like any other failed capture attempt (graceful degrade, not a
+  crash).
+- **A capped turn budget on tier 3's search call** (`max_turns`, currently
+  `6`) -- confirm+extract is single-turn and doesn't need this. The search
+  call needs more headroom than "one tool call plus a final answer" implies:
+  `WebSearch` is a *deferred* tool in this harness, so the model has to call
+  `ToolSearch` to fetch its schema before it can invoke it, then the actual
+  search, then the structured-output call -- 3 turns with zero margin,
+  confirmed in practice to silently truncate (`is_error=True`, no result,
+  zero candidates returned) the moment anything needed a 4th.
 - **A wall-clock timeout per call** (currently 120s) so a stalled query
   degrades gracefully instead of hanging the whole discovery run.
+- **A cap on how many tier 3 candidates get walked** (`MAX_FALLBACK_CANDIDATES`,
+  currently 10 -- raised from an initial 5 after confirming in practice
+  that the WebSearch tool's ranking can put the real posting outside the
+  top 5) -- see tier 3 above.
 
 Before scaling up `results_per_page` on a real run, smoke-test with a
 small page size first and sanity-check actual spend -- these caps bound
-the *worst case* per call, not the total cost of a large run.
+the *worst case* per call, not the total cost of a large run. To make that
+sanity-check concrete rather than a guess: every Claude call's
+`ResultMessage.total_cost_usd` is accumulated into a running total
+(`agents/fetchers.py`'s `get_total_cost_usd()`), and `discovery.py` logs it
+after every posting and again as a final total when the run completes --
+actual spend for a run is always visible in the log, not just the
+per-call worst-case bound.
 
 **URL recorded.** `url` stores whichever page the JD was actually captured
 from, not just Adzuna's original link -- this tracks `description_source`:
-- `description_source = 'redirect_url'` (tier 1/2 succeeded) or
-  `'adzuna_snippet'` (nothing succeeded) -- `url` stays Adzuna's
-  `redirect_url`, since that's the page that was actually used (or the best
-  link available to hand the human).
+- `description_source = 'redirect_url'` (tier 1/2 succeeded) -- `url` is
+  whatever tier 1/2 actually fetched from, which is the *normalized* URL
+  when Adzuna URL normalization (see tier 1 above) applied, not necessarily
+  the raw `redirect_url` Adzuna returned.
+- `description_source = 'adzuna_snippet'` (nothing succeeded) -- `url`
+  stays Adzuna's original `redirect_url`, unnormalized, since that's the
+  best link available to hand the human in this case (not necessarily what
+  was actually attempted).
 - `description_source = 'company_site'` (tier 3's fallback search
   succeeded) -- `url` is overwritten with the confirmed company
   careers-page URL the JD was actually pulled from, not the original
@@ -349,6 +567,98 @@ directly, rather than needing a separate provenance column. Edge case
 worth handling explicitly: if the JD states a single figure rather than a
 range (e.g. "$150k"), treat that as `salary_min = salary_max` = that
 figure.
+
+**Salary detection is tier 3-only, not tier 1/2.** Tier 1/2's deterministic
+extraction (see tier 1 above) has no salary handling at all -- only
+`_confirm_and_extract()` (tier 3 candidates) does. Reasoning: tier 1/2's page
+*is* Adzuna's own
+data source (`adzuna.com/details/{id}`) -- there's no independent JD there
+to check against Adzuna's own salary fields, since Adzuna's own
+`salary_min`/`salary_max`/`salary_is_predicted` already reflect whatever
+that exact page shows. A tier 3 candidate is a genuinely different source
+(an external company site Adzuna never computed its own salary data from),
+so checking its JD for a stated salary is checking something new, not
+re-deriving what the API already gives for free. `capture()`'s salary
+block reads `extraction.get("salary_found")` (not bracket access)
+specifically so a tier 1/2 result -- which has no such key -- falls
+straight through to Adzuna's own salary fields rather than crashing.
+
+**Remote/hybrid/onsite detection (`work_location`).** Three-way field
+(`'remote' | 'hybrid' | 'onsite' | null`), not boolean -- deliberately
+widened from an earlier `is_remote` boolean once hybrid turned out to
+matter for real (see below). Two deterministic things had to be verified
+before building any of this, not assumed:
+- **Adzuna's REMOTE badge doesn't survive `trafilatura` cleaning** --
+  confirmed directly (see "Visible text is main-content-extracted" above):
+  a short, isolated UI badge is exactly what content-density extraction
+  treats as chrome and discards, the same as the salary widget. So this
+  has to be pulled from the *raw* HTML before cleaning runs, via
+  `_detect_remote_badge()` in `_extract_text()` -- the same pattern as the
+  JSON-LD metadata pass, not a new architectural idea. Anchored on the
+  badge's literal text (`REMOTE`), not its Tailwind CSS classes, which are
+  purely cosmetic and fragile to key off.
+- **No equivalent badge exists for hybrid or onsite roles** -- confirmed:
+  nothing to key off there. So the badge alone only ever answers "remote"
+  or "no signal," never "hybrid" or "onsite" outright.
+- Also confirmed: Adzuna's separate *salary* widget (`ui-salary` div) is
+  **not** worth extracting the same way, deterministic or otherwise -- it's
+  just a rendering of the same `salary_min`/`salary_max`/`salary_is_predicted`
+  the API already returns for free, confirmed by its own UI text literally
+  saying "estimated" when `salary_is_predicted` would be true. No new
+  information there; only the badge was worth this treatment.
+
+**Deterministic badge first; a minimal, output-bounded LLM call as
+fallback -- on *both* tiers, not just tier 3.** When the badge is found,
+`work_location = "remote"` outright, no LLM call needed. When it's
+absent:
+- **Tier 3** already makes an LLM call for confirm+extract, so
+  `work_location` is just an added field on that same call (enum
+  `remote`/`hybrid`/`onsite`/`unknown`) -- no extra round-trip.
+- **Tier 1/2** makes *no other* LLM call (see the JSON-LD deterministic
+  extraction under tier 1 above) -- this was a deliberate exception added
+  back on top of that: `_classify_work_location()`, a single call whose
+  *entire* output is one enum word, invoked only when the badge didn't
+  already answer it. This was cut once already (badge-only, no fallback)
+  and reinstated because losing hybrid/remote signal stated only in JD
+  prose was judged worse than the added cost -- see the cost investigation
+  immediately below before assuming this call is "basically free" because
+  its output is tiny.
+
+**Cost reality check, measured directly, not assumed from output size.**
+The intuition "tiny output -> tiny cost" doesn't hold here. Confirmed
+directly via raw `ResultMessage.usage`: each fresh `query()` call pays a
+roughly fixed ~$0.03 overhead dominated by `cache_creation_input_tokens`
+(the system prompt + tool list + our JSON schema, billed as a cache
+*write* every time) -- and this does **not** shrink on repeated calls with
+an identical schema+prompt shape within the same process, confirmed by
+running three back-to-back classification calls and seeing
+`cache_creation_input_tokens` stay ~16,000 on all three rather than
+dropping after the first (no cross-call cache reuse the way a persistent
+conversation would get). So `_classify_work_location()`'s real cost is
+~$0.03–0.06 per call depending on JD length, not near-zero -- barely
+cheaper than a full confirm+extract in some cases. The actual saving comes
+from call *avoidance* (most postings resolve via the badge and cost
+$0.00), not from this call being intrinsically cheap when it does run.
+
+**A cheap keyword pre-filter for this call was investigated and rejected --
+concrete counter-example, not just a theoretical concern.** Idea: pass the
+classifier only sentences containing "remote"/"hybrid"/"onsite" instead of
+the full JD, to shrink input size. Tested directly on a real posting: the
+keyword filter matched *zero* sentences, yet the full-text call correctly
+returned `work_location = "onsite"` for it -- the actual signal was
+"Priority will be given to candidates who live in the Columbus, OH
+metropolitan area," an inference from residency-preference language, not
+any literal use of the three keywords. Real postings signal work
+arrangement obliquely all the time (relocation requirements, "based in
+the tri-state area," in-person-collaboration language) without ever using
+those words -- exactly the kind of fuzzy judgment the LLM call exists for
+in the first place. A keyword filter would silently downgrade real
+classifications to `unknown` in cases like this, so the full JD text is
+passed to `_classify_work_location()`, not a pre-filtered subset.
+
+Absence of the badge is *not* treated as "confirmed onsite" on either
+tier -- it's "no deterministic signal," and the LLM fallback (when it
+runs) can still answer any of remote/hybrid/onsite/unknown.
 
 A real, expected failure mode worth planning for: some fraction of
 postings simply won't resolve cleanly (recruiter postings that don't
@@ -397,8 +707,18 @@ job-hunt-agents/
 │   ├── discovery.py         # Adzuna search -> writes raw postings (no categorization)
 │   └── fetchers.py          # tier 1/2/3 capture logic + LLM confirm/extract calls
 ├── .env.example             # ANTHROPIC_API_KEY, ADZUNA_APP_ID, ADZUNA_APP_KEY, DATABASE_URL
-└── requirements.txt          # include playwright + `playwright install chromium` in setup notes
+└── pyproject.toml            # uv-managed; see the setup note below
 ```
+
+**Setup note confirmed necessary in practice:** `uv add playwright` (or any
+`pip install playwright`) only installs the Python package -- it does not
+install the actual browser binary tier 2 launches. Without a separate
+`uv run playwright install chromium` (one-time, downloads Chromium), tier 2
+fails for *every* posting that needs it, silently -- `_fetch_rendered()`
+catches the "executable doesn't exist" error the same as any other tier 2
+failure and just falls through to tier 3, so this is easy to miss without
+reading the logs closely. Needed once per machine/environment this runs on
+(local dev and CI both), not just once per clone.
 
 ---
 
@@ -582,6 +902,9 @@ Needed from Phase 1:
   dedicated ATS lookup tools -- see Phase 1 for why.
 - `requests` (or `httpx`) for the Adzuna calls.
 - Playwright (Python), Chromium only, for the capture fallback tier.
+- `trafilatura` for main-content HTML extraction before any page text
+  reaches an LLM call -- see "Full posting capture" for the confirmed
+  cost impact.
 - Pydantic v2 for every shared data model.
 - `psycopg` (v3) for Postgres access.
 

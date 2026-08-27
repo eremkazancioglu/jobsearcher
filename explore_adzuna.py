@@ -30,8 +30,9 @@ def search(what="python developer", where="", page=1, results_per_page=10, **ext
         "app_key": APP_KEY,
         "what": what,
         "where": where,
-        "salary_min": 180000,
+        "salary_min": 100000,
         "max_days_old": 14,
+        "company": "amazon",
         "results_per_page": results_per_page,
         **extra_params,
     }
@@ -78,6 +79,6 @@ if __name__ == "__main__":
 
     jobs = results.get("results", [])
     if jobs:
-        print(f"\nkeys per job result: {list(jobs[1].keys())}")
+        print(f"\nkeys per job result: {list(jobs[0].keys())}")
         print("\nfirst job:")
-        pretty(jobs[1])
+        pretty(jobs[0])

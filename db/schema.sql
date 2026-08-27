@@ -1,3 +1,12 @@
+-- Drops and recreates every table -- running this wipes all existing data
+-- (postings, company_research, agent_runs, application_events). Meant for
+-- a clean/reset run against a dev database, not a way to apply incremental
+-- changes to one already holding real captured postings.
+drop table if exists application_events cascade;
+drop table if exists agent_runs cascade;
+drop table if exists company_research cascade;
+drop table if exists postings cascade;
+
 create extension if not exists pgcrypto;
 
 create table postings (
@@ -24,6 +33,10 @@ create table postings (
     salary_min numeric,
     salary_max numeric,
     salary_is_predicted boolean,           -- see "salary precedence" in Phase 1
+    work_location text                     -- 'remote' from Adzuna's own REMOTE
+        check (work_location is null       -- badge when present (deterministic),
+            or work_location in            -- else an LLM classification of the
+                ('remote','hybrid','onsite')), -- JD text, else null if neither says
     match_category text
         check (match_category is null or match_category in ('strong','mixed','weak')),
     match_notes text,                      -- one-line reason from the categorization agent
