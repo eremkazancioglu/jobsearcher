@@ -735,6 +735,14 @@ doesn't redo discovery or capture.
   full capture" above. All three outcomes get written back to the same
   row (no deletion, no separate table — see "why there's no separate dedup
   ledger" above); only `strong`/`mixed` are ever surfaced to the human.
+  **Resume ingestion:** the resume is a plain markdown file, kept outside
+  version control (`resume/` is gitignored -- personal data), loaded via
+  `agents/resume.py`'s `load_resume()`, which reads whatever path
+  `RESUME_PATH` (in `.env`) points to. Same pattern as every other
+  required config in this project (a `.env` var, required, no silent
+  fallback) rather than a DB table or a hardcoded path -- there's exactly
+  one resume, it changes rarely, and it shouldn't live in the repo at all
+  given what it contains.
 - **Company research**, for strong/mixed postings only: culture and
   product summary via web search, written to `company_research` along
   with the source URLs used.
@@ -928,6 +936,11 @@ ADZUNA_APP_KEY=
 DATABASE_URL=                      # Neon connection string (main branch for CI)
 
 # Added in Phase 2
+RESUME_PATH=                       # path to a plain markdown resume file,
+                                    # kept outside version control (see
+                                    # "Fit categorization" above) -- wired
+                                    # up ahead of the rest of Phase 2, since
+                                    # categorize.py needs it from day one
 LANGFUSE_PUBLIC_KEY=
 LANGFUSE_SECRET_KEY=
 LANGFUSE_HOST=https://cloud.langfuse.com
