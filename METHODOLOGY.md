@@ -196,15 +196,25 @@ un-acted-on in "new matches." If a digest send fails partway, nothing from
 that attempt gets marked sent, so the next run tries the whole batch
 again rather than silently dropping some of it.
 
+While the automated schedule (below) is still being trusted, a run with
+nothing new to report still sends a short "no new matches" message,
+instead of staying silent -- otherwise a genuinely quiet run and a
+schedule that's silently stopped working would look identical from
+Slack. Temporary, and will go away once the schedule's been reliable for
+a while.
+
 ## Running it automatically
 
 The whole sequence -- discovery, then fit assessment, then the digest --
 is chained together into a single automated pipeline, confirmed working
-end-to-end against real postings including a real Slack delivery. It can
-be triggered on demand at any time, and is designed to also run on a
-regular schedule (currently off while it's still being validated) so new
-postings get discovered, assessed, and delivered without anyone having to
-kick it off by hand. Whether triggered manually or on a schedule, the
+end-to-end against real postings including a real Slack delivery. It runs
+on its own every 12 hours, and can also be triggered on demand at any
+time in between. Whether triggered manually or on the schedule, the
 search terms it runs with -- keyword, location, salary floor, how far
 back to look -- are visible and can be adjusted for that run without
 touching any code.
+
+It's currently still running against a test database while the schedule
+itself is being trusted, not the real one this is ultimately meant to
+track -- worth knowing if postings found by an automated run don't show
+up where expected yet.

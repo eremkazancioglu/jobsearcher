@@ -113,9 +113,9 @@ Search parameters (`--what`, `--where`, `--title-only`, `--salary-min`,
 
 ## Scheduling (GitHub Actions)
 
-`.github/workflows/agents.yml` runs the pipeline in CI, triggerable
-manually (`workflow_dispatch`) or on a schedule (currently commented out
-pending validation). It needs these repository secrets:
+`.github/workflows/agents.yml` runs the pipeline in CI, on a schedule
+(every 12 hours) and triggerable manually (`workflow_dispatch`) any time
+in between. It needs these repository secrets:
 
 - `ADZUNA_APP_ID`, `ADZUNA_APP_KEY`, `ANTHROPIC_API_KEY`, `DATABASE_URL`,
   `SLACK_WEBHOOK_URL`, `LANGFUSE_PUBLIC_KEY`, `LANGFUSE_SECRET_KEY`,
