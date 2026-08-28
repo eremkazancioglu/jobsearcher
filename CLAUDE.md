@@ -879,8 +879,6 @@ tracker -- see "Phase 3" below for why that's split out.
 ```
 job-hunt-agents/
 ├── README.md
-├── docker-compose.yml
-├── Dockerfile
 ├── STATUS.json                  # committed by CI, not gitignored
 ├── observability/
 │   └── tracing.py               # Langfuse client + environment config
@@ -1045,8 +1043,27 @@ For safe local iteration without touching real data: cut a Neon branch
 for Langfuse via the `environment` tag mentioned above, once Langfuse is
 added in Phase 2.
 
-`docker-compose.yml` (Phase 2) only packages the app runtime (the pipeline
-script, the dashboard) -- it does not run Postgres or Langfuse locally.
+**Docker packaging was built, verified working, then deliberately dropped
+-- not a gap, a reconsidered decision.** A `Dockerfile` +
+`docker-compose.yml` (two services sharing one image: a long-running
+`dashboard`, a one-off `pipeline`) were built and confirmed working
+(images built, the dashboard container rendered real data through a
+mounted `personal/` and `.env`-supplied `DATABASE_URL`). Reconsidered once
+built, not before, because building it surfaced the actual tradeoff:
+Docker's real promise is "launch the container, everything's
+self-contained" -- and that promise doesn't hold here regardless of how
+it's packaged, since the app inherently depends on things that can never
+be baked into an image: a real hosted Neon DB with an actual ongoing job
+search in it (see above -- can't be a fresh empty container-local DB),
+real API keys, and real personal resume/preferences files. What was left
+after that -- "skip installing Python/`uv`/Playwright locally" -- was too
+thin a benefit to justify maintaining a `Dockerfile` and
+`docker-compose.yml` alongside everything else, especially with the
+actual scheduled execution already handled by GitHub Actions (see
+"Scheduling and triggering") and local dev already close to one command
+via `uv sync`. If a real "hand someone a link to try the dashboard"
+use case shows up later, revisit -- the working version of this is
+recoverable from git history, not gone.
 
 ## Tools and stack
 
@@ -1115,8 +1132,8 @@ Added in Phase 2:
   app) since this shows real resume/application data.
 - Slack incoming webhook for the digest, falls back to stdout if
   `SLACK_WEBHOOK_URL` isn't set.
-- Docker + docker-compose for the app runtime (see Environments above).
-- GitHub Actions for scheduling (see Scheduling above).
+- GitHub Actions for scheduling (see Scheduling above). No Docker --
+  see "Environments" above for why that was built and then dropped.
 
 ## Environment variables / secrets
 
@@ -1205,9 +1222,10 @@ defaults.
 8. `digest/send_digest.py`.
 9. `.github/workflows/agents.yml`, wired to the secrets above, with the
    STATUS.json commit step.
-10. `docker-compose.yml` + `Dockerfile` + README last, once the app
-    actually runs, so setup instructions are accurate rather than
-    aspirational.
+10. `README.md` last, once the app actually runs, so setup instructions
+    are accurate rather than aspirational. (Docker packaging was tried at
+    this step too, worked, and was then deliberately dropped -- see
+    "Environments.")
 
 **Only once explicitly asked for, Phase 3:**
 11. `agents/tracker.py` (can stay a stub with clear TODOs for the Gmail
