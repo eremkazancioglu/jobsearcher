@@ -1095,7 +1095,15 @@ Needed from Phase 1:
     fake DSN with an embedded password and printed the resulting
     message -- the password never appeared, in either version, but only
     the current one also preserves the actual libpq error text (e.g.
-    "failed to resolve host ...").
+    "failed to resolve host ..."), which is what actually surfaced the
+    real first CI failure: a trailing newline in the `DATABASE_URL`
+    GitHub Actions secret (pasted with one, most likely from `cat .env`
+    or an editor that appends one) corrupted the DSN's last query param --
+    `channel_binding=require` became `channel_binding="require\n"`, which
+    psycopg rejected outright. `DATABASE_URL = os.environ["DATABASE_URL"]`
+    now `.strip()`s -- defends against this specific class of copy-paste
+    corruption regardless of which secret manager or shell it came
+    through, not just the one instance that happened to hit it.
 
 Added in Phase 2:
 - Anthropic Python SDK (`anthropic`), raw (not `claude_agent_sdk`), for

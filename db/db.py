@@ -24,7 +24,12 @@ from models.schema import AgentRun, ApplicationEvent, Posting
 
 load_dotenv(override=True)
 
-DATABASE_URL = os.environ["DATABASE_URL"]
+# .strip() defends against a trailing newline in the env var itself --
+# confirmed in practice as a real failure mode, not a hypothetical: a
+# GitHub Actions secret pasted with a trailing newline corrupted the DSN's
+# last query param (channel_binding=require became channel_binding=
+# "require\n"), which psycopg then rejected outright.
+DATABASE_URL = os.environ["DATABASE_URL"].strip()
 
 # Matches any scheme://... URI (postgres://, postgresql://, etc), not just
 # an exact DATABASE_URL match -- covers libpq error text that reconstructs
