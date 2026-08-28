@@ -57,10 +57,24 @@ jobs:
       ADZUNA_APP_KEY: ${{ secrets.ADZUNA_APP_KEY }}
       ADZUNA_COUNTRY: us
       ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
-      DATABASE_URL: ${{ secrets.DATABASE_URL }} # point this secret at the `main` Neon branch, not `dev`
+      # Currently pointed at the `dev` Neon branch while this workflow is
+      # still being validated -- switch to `main` once trusted (see
+      # LANGFUSE_TRACING_ENVIRONMENT below, which depends on this).
+      DATABASE_URL: ${{ secrets.DATABASE_URL }}
       RESUME_PATH: personal/resume.md
       PREFERENCES_PATH: personal/preferences.md
       SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+      LANGFUSE_PUBLIC_KEY: ${{ secrets.LANGFUSE_PUBLIC_KEY }}
+      LANGFUSE_SECRET_KEY: ${{ secrets.LANGFUSE_SECRET_KEY }}
+      LANGFUSE_BASE_URL: ${{ secrets.LANGFUSE_BASE_URL }}
+      # Hardcoded, not derived from secrets -- CLAUDE.md's default is
+      # "development locally, production in CI", but that's not accurate
+      # yet: DATABASE_URL above is still pointed at the `dev` Neon branch
+      # while this workflow's still being validated (see the comment on
+      # that line). Flip this to "production" only once DATABASE_URL is
+      # actually switched to `main`, not before -- otherwise traces would
+      # claim "production" for a run that isn't operating on real data.
+      LANGFUSE_TRACING_ENVIRONMENT: development
       # Fall back to the inputs' own defaults when this fires on `schedule`
       # (no `inputs` on that trigger) rather than `workflow_dispatch`.
       PIPELINE_WHAT: ${{ github.event.inputs.what || 'remote' }}

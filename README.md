@@ -118,7 +118,11 @@ manually (`workflow_dispatch`) or on a schedule (currently commented out
 pending validation). It needs these repository secrets:
 
 - `ADZUNA_APP_ID`, `ADZUNA_APP_KEY`, `ANTHROPIC_API_KEY`, `DATABASE_URL`,
-  `SLACK_WEBHOOK_URL` -- same values as `.env`.
+  `SLACK_WEBHOOK_URL`, `LANGFUSE_PUBLIC_KEY`, `LANGFUSE_SECRET_KEY`,
+  `LANGFUSE_BASE_URL` -- same values as `.env`. `LANGFUSE_TRACING_ENVIRONMENT`
+  is hardcoded to `development` directly in the workflow file, not a
+  secret -- flip it to `production` only once `DATABASE_URL` is actually
+  pointed at `main` (see the workflow's own comment on that).
 - `RESUME_B64`, `PREFERENCES_B64` -- base64 of your resume/preferences
   files (`personal/` is gitignored, so CI can't check it out directly):
 
