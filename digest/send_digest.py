@@ -20,12 +20,22 @@ there's nothing to digest -- temporary, for confirming the new cron
 schedule is actually firing (see CLAUDE.md's "Scheduling and triggering").
 Flip to False once that's trusted, to go back to fully silent on an empty
 run.
+
+Every digest also reports how many Claude API calls (discovery/categorize,
+since the previous digest) failed outright -- rate limits, an
+out-of-credits account, a hit max_budget_usd cap, auth issues. This is
+deliberately separate from whether postings got processed: fetchers.py's
+tiered capture degrades gracefully around individual call failures, so a
+run can look completely fine ("N new matches!") while calls are actually
+failing underneath -- this is the signal for that, not a substitute for
+checking agent_runs directly when it's nonzero.
 """
 
 import asyncio
 import logging
 import os
 import sys
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
@@ -34,7 +44,7 @@ import requests
 from dotenv import load_dotenv
 
 from agents.common import AgentRunTracker
-from db.db import fetch_undigested_matches, mark_digested
+from db.db import fetch_last_agent_run, fetch_undigested_matches, mark_digested, sum_llm_errors_since
 
 load_dotenv(override=True)
 
@@ -73,13 +83,25 @@ def _send_slack(text: str) -> None:
     response.raise_for_status()
 
 
+def _llm_error_line() -> str:
+    """How many discovery/categorize Claude calls failed outright since
+    the last digest -- falls back to a 24h lookback on the very first
+    digest ever, when there's no prior digest run to anchor "since" to."""
+    last_digest = fetch_last_agent_run("digest")
+    since = last_digest.finished_at if last_digest else datetime.now(timezone.utc) - timedelta(hours=24)
+    count = sum_llm_errors_since(since)
+    if count:
+        return f"\n\n:warning: {count} LLM call error(s) since last digest -- check agent_runs/Langfuse."
+    return "\n\n0 LLM call errors since last digest."
+
+
 async def main() -> None:
     async with AgentRunTracker("digest") as run:
         postings = fetch_undigested_matches()
         logger.info("%d new match(es) to digest", len(postings))
         if not postings:
             if NOTIFY_ON_EMPTY:
-                text = "No new job matches this run."
+                text = "No new job matches this run." + _llm_error_line()
                 if SLACK_WEBHOOK_URL:
                     _send_slack(text)
                     logger.info("Sent empty-run confirmation to Slack")
@@ -90,7 +112,7 @@ async def main() -> None:
 
         header = f"*{len(postings)} new job match(es)*"
         body = "\n\n".join(_format_posting(p) for p in postings)
-        text = f"{header}\n\n{body}"
+        text = f"{header}\n\n{body}" + _llm_error_line()
 
         if SLACK_WEBHOOK_URL:
             _send_slack(text)

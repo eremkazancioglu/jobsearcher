@@ -1,10 +1,11 @@
 """Discovery agent: Adzuna search -> dedup check -> capture -> write.
 
-Run manually while Phase 1's logic is validated (see CLAUDE.md's
-Scheduling section) -- not on a schedule yet. Defaults match the actual
-query this has been run with in practice (--what "remote" --where "united
-states" --title-only "data scientist" --max-days-old 3 --salary-min
-200000), so a bare invocation with no flags reproduces that:
+Runs standalone (manual/testing) or as the first stage of
+scripts/run_pipeline.py, which is what agents.yml's schedule actually
+triggers -- see CLAUDE.md's "Scheduling and triggering". Defaults match
+the actual query this has been run with in practice (--what "remote"
+--where "united states" --title-only "data scientist" --max-days-old 3
+--salary-min 200000), so a bare invocation with no flags reproduces that:
 
     uv run agents/discovery.py
 
@@ -32,7 +33,8 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from agents.fetchers import capture, get_total_cost_usd
+from agents.common import AgentRunTracker
+from agents.fetchers import capture, get_llm_error_count, get_total_cost_usd
 from db.db import insert_posting, posting_exists
 from mcp_servers.job_sources.server import adzuna_count, adzuna_search
 from models.schema import Posting
@@ -139,10 +141,13 @@ def fetch_all_pages(args: argparse.Namespace) -> list:
     return results
 
 
-async def process_result(adzuna) -> None:
+async def process_result(adzuna) -> bool:
+    """Returns True if a new posting was actually captured and written,
+    False if it was skipped as already-seen -- callers use this to decide
+    whether to count it as work done this run."""
     if posting_exists(SOURCE, adzuna.external_id):
         logger.info("Skipping already-seen posting %s (%s)", adzuna.external_id, adzuna.title)
-        return
+        return False
 
     logger.info("Capturing %s at %s (%s)", adzuna.title, adzuna.company, adzuna.external_id)
     result = await capture(adzuna)
@@ -167,6 +172,7 @@ async def process_result(adzuna) -> None:
         adzuna.external_id, result.description_source, result.work_location,
     )
     logger.info("Running total Claude API cost so far: $%.4f", get_total_cost_usd())
+    return True
 
 
 async def main() -> None:
@@ -192,11 +198,16 @@ async def main() -> None:
             logger.info("%s -- %s", adzuna.title, adzuna.company)
         return
 
-    for adzuna in results:
-        try:
-            await process_result(adzuna)
-        except Exception:
-            logger.exception("Failed to process posting %s -- skipping", adzuna.external_id)
+    async with AgentRunTracker("discovery") as run:
+        for adzuna in results:
+            try:
+                written = await process_result(adzuna)
+                if written:
+                    run.record(is_new=True)
+            except Exception as e:
+                logger.exception("Failed to process posting %s -- skipping", adzuna.external_id)
+                run.record_error(f"{adzuna.external_id} ({adzuna.title}): {e}")
+        run.llm_errors = get_llm_error_count()
 
     logger.info("Run complete. Total Claude API cost: $%.4f", get_total_cost_usd())
 

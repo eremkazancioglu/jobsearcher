@@ -62,6 +62,10 @@ create table agent_runs (
     status text not null check (status in ('success','partial','failed')),
     items_processed integer not null default 0,
     items_new integer not null default 0,
+    llm_errors integer not null default 0,  -- Claude API calls that raised outright
+                                             -- (rate limit, out of credits, budget cap,
+                                             -- auth) -- distinct from a posting merely
+                                             -- degrading gracefully to a lower tier
     error_message text
 );
 

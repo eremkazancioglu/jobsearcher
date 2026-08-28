@@ -9,10 +9,11 @@
   },
   "digest": {
     "status": "success",
-    "started_at": "2026-08-28T21:20:37.259903+00:00",
-    "finished_at": "2026-08-28T21:20:38.014165+00:00",
+    "started_at": "2026-08-28T21:54:04.561438+00:00",
+    "finished_at": "2026-08-28T21:54:05.820873+00:00",
     "items_processed": 0,
     "items_new": 0,
+    "llm_errors": 0,
     "error_message": null
   },
   "pipeline": {
@@ -21,6 +22,15 @@
     "finished_at": "2026-08-28T20:15:28.445258+00:00",
     "items_processed": 3,
     "items_new": 0,
+    "error_message": null
+  },
+  "discovery": {
+    "status": "success",
+    "started_at": "2026-08-28T21:55:03.094072+00:00",
+    "finished_at": "2026-08-28T21:55:04.837770+00:00",
+    "items_processed": 0,
+    "items_new": 0,
+    "llm_errors": 0,
     "error_message": null
   }
 }

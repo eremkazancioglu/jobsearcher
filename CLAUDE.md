@@ -107,6 +107,9 @@ create table agent_runs (
     status text not null check (status in ('success','partial','failed')),
     items_processed integer not null default 0,
     items_new integer not null default 0,
+    llm_errors integer not null default 0,  -- Claude API calls that raised outright,
+                                             -- distinct from graceful degrade -- see
+                                             -- Phase 2's "Slack digest" section
     error_message text
 );
 
@@ -852,6 +855,52 @@ tracker -- see "Phase 3" below for why that's split out.
     to flip back to `False` once the schedule is trusted -- not deleted
     or built as a separate script, since the underlying "digest, but
     empty" logic doesn't change, only whether an empty run says anything.
+  - **Every digest also reports Claude API call failures since the last
+    digest** -- rate limits, an out-of-credits account, a hit
+    `max_budget_usd` cap, auth issues. Deliberately not "postings that
+    failed" (that's `record_error()`/`items_processed` vs. `items_new`,
+    already visible in `agent_runs`) -- `fetchers.py`'s tiered capture and
+    `capture()`'s graceful degrade mean a run can look completely healthy
+    ("N new matches!") while individual Claude calls are actually failing
+    underneath (tier 3 candidates silently falling through, say). This is
+    the signal for catching that, motivated directly by wanting to notice
+    a hit budget cap or an out-of-credits account before it's been
+    silently degrading results for days.
+    - **Tracked via a new `llm_errors` column on `agent_runs`**, not
+      Langfuse -- Langfuse is optional and can be unconfigured, so it
+      can't be the only place this is visible; `agent_runs` already isn't
+      optional. `get_llm_error_count()` (a module-level counter, same
+      pattern as `get_total_cost_usd()`) exists independently in both
+      `fetchers.py` (incremented on `message.is_error`, timeout, or
+      exception inside `_run_claude_json()` -- `message.is_error` is
+      specifically what a hit `max_budget_usd` cap surfaces as) and
+      `categorize.py` (incremented on `anthropic.APIError` specifically,
+      not on a malformed-response `RuntimeError`, which is a different
+      kind of failure). `AgentRunTracker` doesn't collect this itself
+      (it doesn't know which agents make LLM calls, or how many client
+      libraries each uses) -- callers set `run.llm_errors =
+      get_llm_error_count()` themselves before their `async with` block
+      exits, same pattern as `run.record()` for item counts.
+    - **This is also why `discovery.py` was retrofitted onto
+      `AgentRunTracker`** -- it predated Phase 2's `common.py` and never
+      adopted it, so it wrote zero `agent_runs` rows before this. Without
+      that fix, `fetchers.py`'s errors (which mostly happen inside
+      `capture()`, called from `discovery.py`) would never have reached
+      `agent_runs` at all, and the digest's count would have silently
+      only reflected `categorize.py`'s half of the picture. Found while
+      building this, not a separate pre-planned fix.
+    - `send_digest.py`'s `_llm_error_line()` sums `llm_errors` from
+      `discovery`/`categorize` runs since the previous `digest` run
+      (`fetch_last_agent_run("digest")` anchors the window; falls back to
+      a 24h lookback on the very first digest ever, when there's no prior
+      run to anchor to) via `sum_llm_errors_since()`. Always shown, even
+      when zero -- confirms the count itself is working, not just present
+      when there's bad news, consistent with `NOTIFY_ON_EMPTY`'s reasoning
+      above. Confirmed live, not just written: forced a real
+      `anthropic.AuthenticationError` and watched `get_llm_error_count()`
+      increment; separately verified a synthetic `agent_runs` row with
+      `llm_errors=2` correctly produced the warning line before being
+      cleaned up.
 - **Streamlit dashboard**: a "new matches" tab (`match_category in
   ('strong','mixed')`, not yet applied to or dismissed, with a
   discovered-within lookback filter -- 24h/3d/7d, radio-selected, default

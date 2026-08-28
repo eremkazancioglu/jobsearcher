@@ -7,13 +7,27 @@ every Phase 2 agent logs consistently instead of hand-rolling this.
             run.record(is_new=True)
         # or, on a per-item failure that shouldn't fail the whole run:
         run.record_error("posting abc123: Claude call failed")
+    # If this agent makes Claude calls, set this before the block exits --
+    # see fetchers.py's / categorize.py's own get_llm_error_count():
+    run.llm_errors = get_llm_error_count()
 
 On exit, writes one row to `agent_runs` and updates this agent's entry in
 STATUS.json (a flat file at the repo root -- committed by the GitHub
 Actions workflow as its last step in Phase 2's scheduling setup, not by
 this code). Status is "failed" if the run raised, "partial" if it
 completed but recorded at least one item-level error, "success" otherwise.
-"""
+
+`llm_errors` is a distinct signal from item-level errors (record_error()):
+it's specifically Claude API-call failures -- rate limits, an
+out-of-credits account, budget cap hits, auth issues -- which matter even
+on an otherwise-"success" run, since fetchers.py's tiered capture degrades
+gracefully around individual call failures and every posting can still
+get *some* result even while calls are actually failing underneath. Not
+set automatically here (this module doesn't know which agents make LLM
+calls or how many client libraries they use) -- callers that make Claude
+calls are expected to set `run.llm_errors` themselves before the `async
+with` block exits, same as they set items_processed/items_new via
+record()."""
 
 import json
 import logging
@@ -34,6 +48,7 @@ class AgentRunTracker:
         self.agent_name = agent_name
         self.items_processed = 0
         self.items_new = 0
+        self.llm_errors = 0
         self._errors: list[str] = []
         self._started_at: Optional[datetime] = None
 
@@ -69,14 +84,16 @@ class AgentRunTracker:
             status=status,
             items_processed=self.items_processed,
             items_new=self.items_new,
+            llm_errors=self.llm_errors,
             error_message=error_message,
         )
         insert_agent_run(run)
         _update_status_json(run)
         logger.info(
-            "%s run %s: %d processed, %d new%s",
+            "%s run %s: %d processed, %d new%s%s",
             self.agent_name, status, self.items_processed, self.items_new,
             f" ({len(self._errors)} error(s))" if self._errors else "",
+            f", {self.llm_errors} LLM call error(s)" if self.llm_errors else "",
         )
         # Don't suppress the exception -- __aexit__ returning None/False
         # lets it propagate as normal.
@@ -98,6 +115,7 @@ def _update_status_json(run: AgentRun) -> None:
         "finished_at": run.finished_at.isoformat(),
         "items_processed": run.items_processed,
         "items_new": run.items_new,
+        "llm_errors": run.llm_errors,
         "error_message": run.error_message,
     }
     STATUS_PATH.write_text(json.dumps(status, indent=2) + "\n", encoding="utf-8")

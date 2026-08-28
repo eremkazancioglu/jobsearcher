@@ -131,10 +131,10 @@ def insert_agent_run(run: AgentRun) -> None:
                 """
                 insert into agent_runs (
                     agent_name, started_at, finished_at, status,
-                    items_processed, items_new, error_message
+                    items_processed, items_new, llm_errors, error_message
                 ) values (
                     %(agent_name)s, %(started_at)s, %(finished_at)s, %(status)s,
-                    %(items_processed)s, %(items_new)s, %(error_message)s
+                    %(items_processed)s, %(items_new)s, %(llm_errors)s, %(error_message)s
                 )
                 """,
                 run.model_dump(
@@ -145,6 +145,7 @@ def insert_agent_run(run: AgentRun) -> None:
                         "status",
                         "items_processed",
                         "items_new",
+                        "llm_errors",
                         "error_message",
                     }
                 ),
@@ -273,3 +274,33 @@ def fetch_recent_agent_runs(limit: int = 50) -> list[AgentRun]:
         with conn.cursor(row_factory=class_row(AgentRun)) as cur:
             cur.execute("select * from agent_runs order by started_at desc limit %s", (limit,))
             return cur.fetchall()
+
+
+def fetch_last_agent_run(agent_name: str):
+    """Most recent agent_runs row for one agent, or None if it's never
+    run -- send_digest.py uses this (agent_name="digest") to find the
+    window to sum llm_errors over: since the last digest, not some
+    arbitrary fixed lookback."""
+    with _connect() as conn:
+        with conn.cursor(row_factory=class_row(AgentRun)) as cur:
+            cur.execute(
+                "select * from agent_runs where agent_name = %s order by started_at desc limit 1",
+                (agent_name,),
+            )
+            return cur.fetchone()
+
+
+def sum_llm_errors_since(since) -> int:
+    """Total llm_errors across discovery/categorize runs since `since` --
+    the two agents that make Claude calls per posting. Used by
+    send_digest.py to report infrastructure-level failures (rate limits,
+    out of credits, budget caps) since the last digest, separate from
+    whether postings still got processed via graceful degrade."""
+    with _connect() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "select coalesce(sum(llm_errors), 0) from agent_runs "
+                "where agent_name in ('discovery', 'categorize') and started_at > %s",
+                (since,),
+            )
+            return cur.fetchone()[0]

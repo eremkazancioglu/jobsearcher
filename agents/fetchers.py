@@ -201,6 +201,33 @@ def reset_total_cost_usd() -> None:
     _total_cost_usd = 0.0
 
 
+_llm_error_count = 0
+
+
+def _record_llm_error() -> None:
+    global _llm_error_count
+    _llm_error_count += 1
+
+
+def get_llm_error_count() -> int:
+    """Cumulative count of Claude calls that failed outright this process
+    -- timeouts, exceptions, and message.is_error results (which is what
+    a hit max_budget_usd cap, an out-of-credits account, or a rate limit
+    surfaces as via claude_agent_sdk). Distinct from a posting merely
+    falling through to a lower capture tier or the Adzuna snippet, which
+    is normal, expected degradation, not an error -- this counts actual
+    call failures specifically, so infrastructure problems (billing,
+    credits, rate limits) are visible even when the pipeline otherwise
+    degrades gracefully around them and every posting still gets *some*
+    result."""
+    return _llm_error_count
+
+
+def reset_llm_error_count() -> None:
+    global _llm_error_count
+    _llm_error_count = 0
+
+
 # Known-noise line the CLI prints on every subprocess launch when the
 # machine has a claude.ai OAuth login alongside our ANTHROPIC_API_KEY --
 # accurate but irrelevant here, since these calls always use the API key.
@@ -260,12 +287,16 @@ async def _run_claude_json(
                     cost_details={"total_cost": message.total_cost_usd} if message.total_cost_usd else None,
                 )
                 if message.is_error:
-                    # Demoted from warning: this is an expected, handled
-                    # outcome (budget cap hit, timeout-ish failure, etc.)
-                    # that every call site already logs a more specific
-                    # follow-up for (e.g. "Confirm+extract call failed for
-                    # %s") -- not something needing separate attention here.
+                    # Log level demoted to info -- every call site already
+                    # logs a more specific follow-up for the graceful
+                    # degrade (e.g. "Confirm+extract call failed for %s").
+                    # But this is exactly the case get_llm_error_count()
+                    # exists for: a hit max_budget_usd cap, an
+                    # out-of-credits account, or a rate limit all surface
+                    # as message.is_error here -- worth counting even
+                    # though it's handled gracefully in the moment.
                     logger.info("Claude query returned an error: %s", message.result)
+                    _record_llm_error()
                     return None
                 return message.structured_output
         return None
@@ -278,10 +309,12 @@ async def _run_claude_json(
         except asyncio.TimeoutError:
             logger.warning("Claude query timed out after %ss", CLAUDE_QUERY_TIMEOUT_S)
             generation.update(level="ERROR", status_message="timeout")
+            _record_llm_error()
             return None
         except Exception:
             logger.exception("Claude query failed")
             generation.update(level="ERROR", status_message="exception")
+            _record_llm_error()
             return None
 
 

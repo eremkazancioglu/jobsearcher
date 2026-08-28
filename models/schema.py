@@ -100,6 +100,7 @@ class AgentRun(BaseModel):
     status: AgentRunStatus
     items_processed: int = 0
     items_new: int = 0
+    llm_errors: int = 0
     error_message: Optional[str] = None
 
 

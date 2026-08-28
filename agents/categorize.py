@@ -137,6 +137,23 @@ def get_total_cost_usd() -> float:
     return _total_cost_usd
 
 
+_llm_error_count = 0
+
+
+def get_llm_error_count() -> int:
+    """Cumulative count of Claude API calls that raised outright this
+    process -- rate limits, an out-of-credits account, auth failures,
+    connection errors. Same purpose as fetchers.py's get_llm_error_count();
+    tracked separately since these are two different Claude clients
+    (raw Anthropic SDK here vs. claude_agent_sdk there)."""
+    return _llm_error_count
+
+
+def reset_llm_error_count() -> None:
+    global _llm_error_count
+    _llm_error_count = 0
+
+
 @observe(name="categorize_posting")
 async def _categorize(resume: str, preferences: str, posting) -> dict:
     prompt = (
@@ -156,12 +173,22 @@ async def _categorize(resume: str, preferences: str, posting) -> dict:
         f"{' (estimated)' if posting.salary_is_predicted else ''}\n\n"
         f"Description:\n{(posting.description or '')[:12000]}"
     )
-    response = await _client.messages.create(
-        model=CLAUDE_MODEL,
-        max_tokens=CLAUDE_MAX_TOKENS,
-        messages=[{"role": "user", "content": prompt}],
-        output_config={"format": {"type": "json_schema", "schema": CATEGORIZE_SCHEMA}},
-    )
+    global _llm_error_count
+    try:
+        response = await _client.messages.create(
+            model=CLAUDE_MODEL,
+            max_tokens=CLAUDE_MAX_TOKENS,
+            messages=[{"role": "user", "content": prompt}],
+            output_config={"format": {"type": "json_schema", "schema": CATEGORIZE_SCHEMA}},
+        )
+    except anthropic.APIError:
+        # Specifically an API-level failure (rate limit, insufficient
+        # credits, auth, connection) -- not a malformed-response issue
+        # (handled below, not counted here). Re-raised so the existing
+        # per-posting error handling in main() still applies; this just
+        # also counts it before that happens.
+        _llm_error_count += 1
+        raise
     _record_cost(response.usage)
 
     text = next((b.text for b in response.content if b.type == "text"), None)
@@ -193,6 +220,7 @@ async def main() -> None:
                 logger.info("Running total Claude API cost so far: $%.4f", get_total_cost_usd())
             except Exception as e:
                 run.record_error(f"{posting.id} ({posting.title}): {e}")
+        run.llm_errors = get_llm_error_count()
 
     logger.info("Run complete. Total Claude API cost: $%.4f", get_total_cost_usd())
 
