@@ -14,6 +14,12 @@ mark_digested() so nothing goes out twice. One Slack message per run, not
 one per posting -- if the send fails, nothing gets marked digested, so a
 failed run is retried whole on the next run rather than needing to figure
 out which postings partially went out.
+
+NOTIFY_ON_EMPTY (below) sends a short "no new matches" message even when
+there's nothing to digest -- temporary, for confirming the new cron
+schedule is actually firing (see CLAUDE.md's "Scheduling and triggering").
+Flip to False once that's trusted, to go back to fully silent on an empty
+run.
 """
 
 import asyncio
@@ -37,6 +43,10 @@ logger = logging.getLogger(__name__)
 
 SLACK_WEBHOOK_URL = os.environ.get("SLACK_WEBHOOK_URL")
 SLACK_TIMEOUT_S = 15
+
+# Temporary -- see module docstring. Flip to False to stop sending
+# anything on a run with zero new matches.
+NOTIFY_ON_EMPTY = True
 
 MATCH_BADGE = {"strong": ":large_green_circle: strong", "mixed": ":large_yellow_circle: mixed"}
 
@@ -68,6 +78,14 @@ async def main() -> None:
         postings = fetch_undigested_matches()
         logger.info("%d new match(es) to digest", len(postings))
         if not postings:
+            if NOTIFY_ON_EMPTY:
+                text = "No new job matches this run."
+                if SLACK_WEBHOOK_URL:
+                    _send_slack(text)
+                    logger.info("Sent empty-run confirmation to Slack")
+                else:
+                    logger.info("SLACK_WEBHOOK_URL not set -- printing digest to stdout instead")
+                    print(text)
             return
 
         header = f"*{len(postings)} new job match(es)*"

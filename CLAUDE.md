@@ -843,6 +843,15 @@ tracker -- see "Phase 3" below for why that's split out.
   Falls back to printing the same message to stdout when
   `SLACK_WEBHOOK_URL` isn't set, per "Tools and stack" below -- confirmed
   in practice against real categorized postings.
+  - **`NOTIFY_ON_EMPTY` (currently `True`, temporary):** sends a short
+    "No new job matches this run" message even when there's nothing to
+    digest. Added specifically to confirm the new cron schedule (see
+    "Scheduling and triggering") is actually firing, since a silent
+    "nothing to digest" run and a silently-broken/never-firing schedule
+    look identical from the outside otherwise. A single module-level flag
+    to flip back to `False` once the schedule is trusted -- not deleted
+    or built as a separate script, since the underlying "digest, but
+    empty" logic doesn't change, only whether an empty run says anything.
 - **Streamlit dashboard**: a "new matches" tab (`match_category in
   ('strong','mixed')`, not yet applied to or dismissed, with a
   discovered-within lookback filter -- 24h/3d/7d, radio-selected, default
@@ -986,6 +995,17 @@ Known GitHub Actions quirks to build around:
 
 This whole section is Phase 2 scope — Phase 1 is run manually while its
 logic is validated, not on a schedule yet.
+
+**Live as of a full manual end-to-end validation run:** `schedule` fires
+every 12 hours (`cron: "0 */12 * * *"`, 00:00 and 12:00 UTC), enabled in
+`agents.yml` only after confirming the pipeline works correctly triggered
+manually first -- not turned on speculatively alongside the workflow
+itself, see the earlier commented-out state in git history. Still pointed
+at the `dev` Neon branch (see "Environments" and `agents.yml`'s own
+comments) while this schedule itself gets trusted; `send_digest.py`'s
+`NOTIFY_ON_EMPTY` (see "What Phase 2 builds" above) exists specifically
+to make that trust-building period observable from Slack, not just from
+`STATUS.json`/`agent_runs`.
 
 ## Monitoring and observability
 

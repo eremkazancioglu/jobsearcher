@@ -1,10 +1,10 @@
 name: JobSearcher pipeline
 
 on:
-  # schedule:
-  #   # Best-effort, no timing SLA -- see CLAUDE.md's "Scheduling and
-  #   # triggering" for the known GitHub Actions quirks this runs into.
-  #   - cron: "0 13 * * *" # ~9am US Eastern (EDT); adjust to taste
+  schedule:
+    # Best-effort, no timing SLA -- see CLAUDE.md's "Scheduling and
+    # triggering" for the known GitHub Actions quirks this runs into.
+    - cron: "0 */12 * * *" # every 12 hours (00:00 and 12:00 UTC)
   workflow_dispatch:
     # Same params scripts/run_pipeline.py's own CLI takes, surfaced here so
     # the actual daily search is visible/editable in this file (and,
