@@ -1,18 +1,26 @@
 {
   "categorize": {
     "status": "success",
-    "started_at": "2026-08-28T18:17:02.343043+00:00",
-    "finished_at": "2026-08-28T18:18:10.222238+00:00",
-    "items_processed": 26,
-    "items_new": 26,
+    "started_at": "2026-08-28T20:15:02.869861+00:00",
+    "finished_at": "2026-08-28T20:15:25.819308+00:00",
+    "items_processed": 8,
+    "items_new": 8,
     "error_message": null
   },
   "digest": {
     "status": "success",
-    "started_at": "2026-08-28T18:18:19.285502+00:00",
-    "finished_at": "2026-08-28T18:18:19.725222+00:00",
-    "items_processed": 10,
-    "items_new": 10,
+    "started_at": "2026-08-28T20:15:26.712114+00:00",
+    "finished_at": "2026-08-28T20:15:27.937214+00:00",
+    "items_processed": 1,
+    "items_new": 1,
+    "error_message": null
+  },
+  "pipeline": {
+    "status": "success",
+    "started_at": "2026-08-28T20:14:18.674012+00:00",
+    "finished_at": "2026-08-28T20:15:28.445258+00:00",
+    "items_processed": 3,
+    "items_new": 0,
     "error_message": null
   }
 }
