@@ -1,10 +1,9 @@
 -- Drops and recreates every table -- running this wipes all existing data
--- (postings, company_research, agent_runs, application_events). Meant for
--- a clean/reset run against a dev database, not a way to apply incremental
--- changes to one already holding real captured postings.
+-- (postings, agent_runs, application_events). Meant for a clean/reset run
+-- against a dev database, not a way to apply incremental changes to one
+-- already holding real captured postings.
 drop table if exists application_events cascade;
 drop table if exists agent_runs cascade;
-drop table if exists company_research cascade;
 drop table if exists postings cascade;
 
 create extension if not exists pgcrypto;
@@ -40,20 +39,15 @@ create table postings (
     match_category text
         check (match_category is null or match_category in ('strong','mixed','weak')),
     match_notes text,                      -- one-line reason from the categorization agent
+    dismissed_at timestamptz,              -- human dismissal from "new matches" (Streamlit) --
+                                            -- distinct from applied_at: a dismiss says "not
+                                            -- interested", not "already applied"
     discovered_at timestamptz not null default now(),
     applied_at timestamptz,                -- set by the human, via Streamlit
     application_status text not null default 'not_applied'
         check (application_status in
             ('not_applied','applied','interviewing','rejected','offer','withdrawn')),
     unique (source, external_id)
-);
-
-create table company_research (
-    company text primary key,
-    culture_summary text,
-    products_summary text,
-    sources jsonb not null default '[]',   -- array of source URLs
-    updated_at timestamptz not null default now()
 );
 
 create table agent_runs (

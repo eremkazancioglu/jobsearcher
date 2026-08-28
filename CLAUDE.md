@@ -1,9 +1,17 @@
 # Job hunt agents — project brief
 
 A multi-agent pipeline that discovers job postings, assesses fit against a
-resume, researches the companies behind good matches, and tracks application
-status via email. Also a portfolio project — code quality and a clean
-"clone and run" experience matter, not just working software.
+resume, and tracks application status via email. Also a portfolio project —
+code quality and a clean "clone and run" experience matter, not just
+working software.
+
+Company research (culture/product summaries per company) was scoped out of
+Phase 2 -- the person doing this search wants to do that research
+themselves rather than have an agent summarize it, and it would have added
+real per-company web-search LLM cost for something not actually wanted. If
+this changes later, `company_research` would need to be re-added to the
+schema (see git history for the last version of that table) -- it isn't
+being kept around unused in the meantime.
 
 This document is the spec to build from. Where a decision has a reason
 behind it, the reason is included — several of these look like they could be
@@ -70,20 +78,15 @@ create table postings (
     match_category text
         check (match_category is null or match_category in ('strong','mixed','weak')),
     match_notes text,                      -- one-line reason from the categorization agent
+    dismissed_at timestamptz,              -- human "not interested" from Streamlit's "new
+                                            -- matches" tab -- distinct from applied_at, see
+                                            -- Phase 2's "Streamlit dashboard" section
     discovered_at timestamptz not null default now(),
     applied_at timestamptz,                -- set by the human, via Streamlit
     application_status text not null default 'not_applied'
         check (application_status in
             ('not_applied','applied','interviewing','rejected','offer','withdrawn')),
     unique (source, external_id)
-);
-
-create table company_research (
-    company text primary key,
-    culture_summary text,
-    products_summary text,
-    sources jsonb not null default '[]',   -- array of source URLs
-    updated_at timestamptz not null default now()
 );
 
 create table agent_runs (
@@ -143,9 +146,6 @@ have meant. Categorization still only runs once per posting (on whichever
 run first notices `match_category is null`) and is never recomputed
 afterward — consistent with the general rule below that fit is a
 per-posting, point-in-time judgment, not a recurring or comparative one.
-If company research (also Phase 2) later surfaces something that would
-have changed the read, that's useful information for the human reviewing
-the dashboard, not something that triggers automatic re-categorization.
 
 ### Why fit categorization has no separate ranking agent
 
@@ -730,22 +730,79 @@ doesn't redo discovery or capture.
 ### What Phase 2 builds
 
 - **Fit categorization.** For every posting where `match_category is
-  null`, judge `strong` / `mixed` / `weak` against the resume using the
-  full captured description — see "why categorization happens once, after
-  full capture" above. All three outcomes get written back to the same
-  row (no deletion, no separate table — see "why there's no separate dedup
-  ledger" above); only `strong`/`mixed` are ever surfaced to the human.
-  **Resume ingestion:** the resume is a plain markdown file, kept outside
-  version control (`resume/` is gitignored -- personal data), loaded via
-  `agents/resume.py`'s `load_resume()`, which reads whatever path
-  `RESUME_PATH` (in `.env`) points to. Same pattern as every other
-  required config in this project (a `.env` var, required, no silent
-  fallback) rather than a DB table or a hardcoded path -- there's exactly
-  one resume, it changes rarely, and it shouldn't live in the repo at all
-  given what it contains.
-- **Company research**, for strong/mixed postings only: culture and
-  product summary via web search, written to `company_research` along
-  with the source URLs used.
+  null`, judge `strong` / `mixed` / `weak` against **both** the resume and
+  the preferences document (see below) using the full captured
+  description — see "why categorization happens once, after full capture"
+  above. All three outcomes get written back to the same row (no deletion,
+  no separate table — see "why there's no separate dedup ledger" above);
+  only `strong`/`mixed` are ever surfaced to the human.
+  - **Resume answers "am I qualified"; preferences answers "do I want
+    this."** These are deliberately two separate documents, not one merged
+    file, because they answer different questions and come from different
+    kinds of content -- a resume is a factual record of experience,
+    preferences is free-form prose about what's actually wanted (role
+    type, seniority, industries to avoid, comp floor, location/remote
+    stance, deal-breakers, anything else that isn't a qualification but
+    still determines fit). Both matter equally to the categorization
+    judgment -- a posting can be a strong match on paper (resume) and
+    still not be a match the person actually wants (preferences), and
+    that's exactly the case this split is meant to catch, not something to
+    silently favor one document over the other on.
+  - **Resume ingestion:** the resume is a plain markdown file, kept
+    outside version control (`personal/` is gitignored -- personal data),
+    loaded via `agents/resume.py`'s `load_resume()`, which reads whatever
+    path `RESUME_PATH` (in `.env`) points to.
+  - **Preferences ingestion:** same pattern, a separate plain markdown
+    file of free prose (not a structured/fielded format -- preferences
+    like this don't compress cleanly into fixed fields, and free prose is
+    what the categorization LLM call is already good at reading), also
+    kept outside version control under `personal/` (the same gitignored
+    folder as the resume -- both are personal documents, hence the folder
+    name), loaded via `agents/preferences.py`'s `load_preferences()`,
+    which reads whatever path `PREFERENCES_PATH` (in `.env`) points to.
+  - Both are required `.env` vars with no silent fallback -- same pattern
+    as every other required config in this project -- rather than a DB
+    table or a hardcoded path: there's exactly one of each, they change
+    rarely, and neither should live in the repo given what they contain.
+  - **Model: Haiku** (`agents/categorize.py`). Worth flagging as more of
+    an open question here than it was for tier 3's confirm/extract: this
+    call is a genuinely holistic read (full JD against a full resume and
+    preferences document), not a narrow same-posting/lookup judgment, so
+    unlike tier 3 it hasn't yet been validated in practice that Haiku's
+    quality is sufficient here -- watch real output quality once this runs
+    against real postings, and revisit the model choice if it isn't. Real
+    output on actual postings so far (see git history / logs) has been
+    reading as sound -- correctly flagging deal-breaker preference
+    mismatches (location, employer size, PTO) even when the resume match
+    is technically strong.
+  - **Uses the raw Anthropic SDK, not `claude_agent_sdk`** -- the one
+    deliberate exception in this project, where every other Claude call
+    goes through `claude_agent_sdk`. Measured directly on a real
+    categorize call: the CLI harness `claude_agent_sdk` launches adds
+    ~18,600 tokens of its own system prompt + built-in tool declarations
+    to *every* call (billed as a 1.25x cache write each time, confirmed to
+    never carry over between separate `query()` invocations -- see
+    "Cost reality check" under Phase 1's capture section), on top of
+    ~2,800 tokens of this call's own actual content
+    (resume+preferences+JD). That harness overhead alone accounted for
+    ~73% of a call's cost. Prompt caching was investigated as a fix and
+    rejected -- not because it doesn't work, but because it wouldn't
+    engage here at all: Haiku 4.5 requires 4,096+ tokens before
+    `cache_control` does anything (confirmed against current docs, not
+    assumed), and this call's own content (~2,800 tokens) doesn't clear
+    that bar either. So the actual fix is simpler than caching: stop
+    paying for a full coding-agent harness a plain classification call
+    never needed. The same measurement also showed `claude_agent_sdk`
+    defaulting to extended thinking (1,348 of 1,511 output tokens on that
+    call) for a task that doesn't need it; the raw SDK doesn't enable
+    thinking unless explicitly requested, so leaving `thinking` unset here
+    is a second, independent saving stacked on top of the harness-overhead
+    fix. Measured combined effect on real calls: ~88-90% lower cost than
+    the `claude_agent_sdk` version (~$0.004-0.005/call vs. ~$0.038/call).
+    Cost is computed locally in `categorize.py` from each response's
+    `usage` block against Haiku 4.5's published per-token pricing, since
+    the raw SDK (unlike `claude_agent_sdk`'s `ResultMessage`) doesn't
+    return a pre-computed `total_cost_usd`.
 - **Application tracker**: reads email (Gmail, read-only scope) for
   postings where `applied_at is not null` (set by the human via
   Streamlit — see rationale above), and updates `application_status` plus
@@ -753,10 +810,30 @@ doesn't redo discovery or capture.
   rejected, offer, etc).
 - **Slack digest** of newly strong/mixed postings after each run.
 - **Streamlit dashboard**: a "new matches" tab (`match_category in
-  ('strong','mixed')` and not yet applied to, with a mark-as-applied
-  action and inline company research), a "pipeline" tab (applied
-  postings, current status, event history), and a "pipeline health" tab
-  (see monitoring below).
+  ('strong','mixed')`, not yet applied to or dismissed, with a
+  discovered-within lookback filter -- 24h/3d/7d, radio-selected, default
+  7d -- and mark-as-applied / dismiss actions), a "pipeline" tab (applied
+  postings, current status, event history, plus a remove-from-pipeline
+  action), and a "pipeline health" tab (see monitoring below).
+  - **Dismiss vs. mark-as-applied are two distinct signals, not one.**
+    Mark-as-applied means "I'm pursuing this" (sets `applied_at`, moves it
+    to the pipeline). Dismiss means "not interested" (sets a new
+    `dismissed_at` column on `postings`, drops it out of "new matches"
+    only) -- neither implies the other, and conflating them would mean a
+    dismissed posting either clutters the pipeline tab or a genuinely
+    applied-to posting silently vanishes. The posting itself is never
+    deleted by either action. No reason/notes field on dismissal yet
+    (e.g. "why" it was dismissed) -- deliberately deferred until it's
+    actually wanted, not built speculatively; `dismissed_at` alone doesn't
+    block adding that later.
+  - **Remove-from-pipeline** (the inverse of mark-as-applied): clears
+    `applied_at`/`application_status` back to defaults and deletes any
+    `application_events` logged against that posting -- a human
+    correction ("I mis-clicked, or changed my mind"), not something an
+    agent infers, same reasoning as `applied_at` itself. Two-step confirm
+    in the UI specifically because it deletes event history, unlike
+    dismiss (reversible in principle, nothing destructive happens) and
+    mark-as-applied (additive).
 - **Full observability**: Langfuse tracing, the `agent_runs` table, and
   the self-committing `STATUS.json` (see "Monitoring and observability"
   below).
@@ -776,14 +853,13 @@ job-hunt-agents/
 ├── agents/
 │   ├── common.py                # AgentRunTracker: agent_runs + STATUS.json
 │   ├── categorize.py            # fit categorization, reads match_category IS NULL
-│   ├── research.py              # company culture/product research only
 │   └── tracker.py               # Gmail-based, read-only scope
 ├── digest/
 │   └── send_digest.py
 ├── dashboard/
 │   └── app.py                    # Streamlit: new matches / pipeline / health
 ├── scripts/
-│   └── run_pipeline.py           # entrypoint: discovery -> categorize -> research -> tracker -> digest
+│   └── run_pipeline.py           # entrypoint: discovery -> categorize -> tracker -> digest
 └── .github/
     └── workflows/
         └── agents.yml            # schedule + workflow_dispatch, STATUS.json commit step
@@ -856,13 +932,25 @@ than new tools:
    catches "the workflow crashed."
 2. A **self-committing STATUS.json** written by every agent run (success or
    failure) and committed back to the repo by the workflow as its last
-   step. This does double duty: it's a human-readable "last run" status
+   step (the commit itself is CI's job, not this code's -- see
+   `agents/common.py` below, which only ever writes the file locally).
+   This does double duty: it's a human-readable "last run" status
    visible right in the repo, and the commit itself resets the 60-day
-   inactivity clock -- no separate keepalive action needed.
+   inactivity clock -- no separate keepalive action needed. Keyed per
+   agent name (`{"discovery": {...}, "categorize": {...}, ...}`) and
+   merged rather than overwritten on each write, so one agent's run
+   doesn't blank out another's last-known status.
 3. The `agent_runs` table -- one row per agent execution (status, item
-   counts, error message), written from a shared context-manager helper so
-   every agent logs consistently. This is what the Streamlit "pipeline
-   health" tab reads.
+   counts, error message), written from `agents/common.py`'s
+   `AgentRunTracker` (an async context manager) so every agent logs
+   consistently rather than hand-rolling this per agent. Status is
+   `failed` if the wrapped block raised, `partial` if it completed but the
+   agent recorded at least one item-level error via `record_error()`
+   (e.g. one posting's Claude call failed, the rest succeeded), and
+   `success` otherwise -- so a run that got through most postings but hit
+   a couple of failures is visibly distinct from a clean run, without
+   being conflated with "the whole run crashed." This is what the
+   Streamlit "pipeline health" tab reads.
 4. Langfuse -- already instrumenting every LLM call, so malformed output,
    rate limits, and per-call cost are visible automatically. Use Langfuse's
    native `environment` tag (`development` locally, `production` in CI) to
@@ -899,13 +987,15 @@ script, the dashboard) -- it does not run Postgres or Langfuse locally.
 Needed from Phase 1:
 - Python throughout.
 - Claude Agent SDK (`claude-agent-sdk`) for the LLM-driven judgment calls
-  (capture confirmation/extraction now; categorization and research in
-  Phase 2) -- verify current `query()` / `ClaudeAgentOptions` API and the
+  in `fetchers.py` (capture confirmation/extraction, tier 3's search) --
+  verify current `query()` / `ClaudeAgentOptions` API and the
   `mcp_servers` config shape against the live docs when implementing; this
   evolves and shouldn't be assumed from memory. See "Cost controls on the
   LLM calls" in Phase 1 -- Haiku, a per-call budget cap, and a turn limit
   are not optional extras, they're load-bearing for this being affordable
-  to run at all.
+  to run at all. **Not** used by `categorize.py` (Phase 2) -- see its raw
+  Anthropic SDK note under "Fit categorization" above for why that one
+  call is the deliberate exception.
 - A custom MCP server (FastMCP) exposing Adzuna search as a tool. No
   dedicated ATS lookup tools -- see Phase 1 for why.
 - `requests` (or `httpx`) for the Adzuna calls.
@@ -917,6 +1007,9 @@ Needed from Phase 1:
 - `psycopg` (v3) for Postgres access.
 
 Added in Phase 2:
+- Anthropic Python SDK (`anthropic`), raw (not `claude_agent_sdk`), for
+  `categorize.py`'s LLM call only -- see its note under "Fit
+  categorization" above.
 - Langfuse Python SDK, `@observe` decorator, `get_client()`.
 - Streamlit for the dashboard (three tabs, see Phase 2 above). Deploy
   privately (Streamlit Community Cloud's free tier includes one private
@@ -941,6 +1034,11 @@ RESUME_PATH=                       # path to a plain markdown resume file,
                                     # "Fit categorization" above) -- wired
                                     # up ahead of the rest of Phase 2, since
                                     # categorize.py needs it from day one
+PREFERENCES_PATH=                  # path to a plain markdown preferences
+                                    # file (free prose: role/seniority/
+                                    # location/comp/deal-breakers), same
+                                    # treatment as RESUME_PATH -- see
+                                    # "Fit categorization" above
 LANGFUSE_PUBLIC_KEY=
 LANGFUSE_SECRET_KEY=
 LANGFUSE_HOST=https://cloud.langfuse.com
@@ -970,16 +1068,14 @@ the workflow needs `permissions: contents: write` to commit STATUS.json.
    on this.
 6. `agents/categorize.py` -- fit judgment against postings with
    `match_category is null`.
-7. `agents/research.py` (company culture/product context for
-   strong/mixed postings).
-8. `dashboard/app.py` -- once there's categorized data to look at,
+7. `dashboard/app.py` -- once there's categorized data to look at,
    iterating on the rest gets much easier.
-9. `agents/tracker.py` (can stay a stub with clear TODOs for the Gmail
+8. `agents/tracker.py` (can stay a stub with clear TODOs for the Gmail
    OAuth setup -- that's a one-time interactive step, not something to
    automate away).
-10. `digest/send_digest.py`.
-11. `.github/workflows/agents.yml`, wired to the secrets above, with the
+9. `digest/send_digest.py`.
+10. `.github/workflows/agents.yml`, wired to the secrets above, with the
     STATUS.json commit step.
-12. `docker-compose.yml` + `Dockerfile` + README last, once the app
+11. `docker-compose.yml` + `Dockerfile` + README last, once the app
     actually runs, so setup instructions are accurate rather than
     aspirational.

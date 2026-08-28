@@ -1,6 +1,6 @@
 """Loads the user's resume text from RESUME_PATH.
 
-The resume itself lives outside version control (resume/ is gitignored --
+The resume itself lives outside version control (personal/ is gitignored --
 personal data) -- this just points at wherever RESUME_PATH says it is,
 same pattern as every other required credential/config in this project.
 """

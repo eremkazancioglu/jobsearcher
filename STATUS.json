@@ -1,0 +1,10 @@
+{
+  "categorize": {
+    "status": "success",
+    "started_at": "2026-08-28T16:36:33.300125+00:00",
+    "finished_at": "2026-08-28T16:36:40.630096+00:00",
+    "items_processed": 3,
+    "items_new": 3,
+    "error_message": null
+  }
+}

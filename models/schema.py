@@ -85,17 +85,10 @@ class Posting(BaseModel):
     work_location: Optional[WorkLocation] = None
     match_category: Optional[MatchCategory] = None
     match_notes: Optional[str] = None
+    dismissed_at: Optional[datetime] = None
     discovered_at: Optional[datetime] = None
     applied_at: Optional[datetime] = None
     application_status: ApplicationStatus = "not_applied"
-
-
-class CompanyResearch(BaseModel):
-    company: str
-    culture_summary: Optional[str] = None
-    products_summary: Optional[str] = None
-    sources: list[str] = Field(default_factory=list)
-    updated_at: Optional[datetime] = None
 
 
 class AgentRun(BaseModel):
