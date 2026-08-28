@@ -3,16 +3,12 @@ discovery -> categorize -> digest.
 
     uv run scripts/run_pipeline.py
 
-Discovery search params pass through, same names/meaning as
-agents/discovery.py's own CLI:
+Discovery search params pass through, same names/meaning/defaults as
+agents/discovery.py's own CLI (see there for the actual query these
+defaults reproduce) -- a bare invocation matches a bare
+`uv run agents/discovery.py`:
 
     uv run scripts/run_pipeline.py --what "data scientist" --where "united states"
-
---max-days-old defaults to 1 here (not discovery.py's own default of 14)
--- this script is meant for a daily scheduled run (see CLAUDE.md's
-"Scheduling and triggering"), and a tight window is what keeps daily
-Adzuna hits and per-posting capture cost bounded, per CLAUDE.md's
-"Pagination" section.
 
 Each stage runs as its own subprocess, not an in-process import -- this
 script doesn't parse discovery.py's/categorize.py's/send_digest.py's
@@ -45,13 +41,13 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Run discovery -> categorize -> digest in sequence")
-    parser.add_argument("--what", default="data scientist", help="Keyword(s) to search for")
-    parser.add_argument("--where", default="", help="Location to search in")
-    parser.add_argument("--salary-min", default=None)
-    parser.add_argument("--max-days-old", default="1", help="Passed to discovery.py -- defaults tight for a daily run")
+    parser.add_argument("--what", default="remote", help="Keyword(s) to search for")
+    parser.add_argument("--where", default="united states", help="Location to search in")
+    parser.add_argument("--salary-min", default="200000")
+    parser.add_argument("--max-days-old", default="3")
     parser.add_argument("--results-per-page", default="20")
     parser.add_argument("--max-pages", default="5")
-    parser.add_argument("--title-only", default=None)
+    parser.add_argument("--title-only", default="data scientist")
     parser.add_argument("--full-time", default="1", choices=["0", "1"])
     return parser.parse_args()
 

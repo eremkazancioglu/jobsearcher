@@ -1,19 +1,22 @@
 """Discovery agent: Adzuna search -> dedup check -> capture -> write.
 
 Run manually while Phase 1's logic is validated (see CLAUDE.md's
-Scheduling section) -- not on a schedule yet.
+Scheduling section) -- not on a schedule yet. Defaults match the actual
+query this has been run with in practice (--what "remote" --where "united
+states" --title-only "data scientist" --max-days-old 3 --salary-min
+200000), so a bare invocation with no flags reproduces that:
 
-    uv run agents/discovery.py --what "data scientist" --where "united states"
+    uv run agents/discovery.py
 
 Add --count-only to just see how many postings match, with no capture and
 no DB writes:
 
-    uv run agents/discovery.py --what "data scientist" --where "united states" --count-only
+    uv run agents/discovery.py --count-only
 
 Add --list-only to see each matching posting's title and company (up to
 --results-per-page of them), with no capture and no DB writes:
 
-    uv run agents/discovery.py --what "data scientist" --where "united states" --list-only
+    uv run agents/discovery.py --list-only
 
 By default, paginates through up to --max-pages (5) of results, not just
 one page -- narrow this with --title-only / --max-days-old for a run
@@ -45,10 +48,10 @@ SOURCE = "adzuna"
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Adzuna discovery + full posting capture")
-    parser.add_argument("--what", default="data scientist", help="Keyword(s) to search for")
-    parser.add_argument("--where", default="", help="Location to search in")
-    parser.add_argument("--salary-min", type=float, default=None)
-    parser.add_argument("--max-days-old", type=int, default=14)
+    parser.add_argument("--what", default="remote", help="Keyword(s) to search for")
+    parser.add_argument("--where", default="united states", help="Location to search in")
+    parser.add_argument("--salary-min", type=float, default=200000)
+    parser.add_argument("--max-days-old", type=int, default=3)
     parser.add_argument("--results-per-page", type=int, default=20)
     parser.add_argument(
         "--max-pages",
@@ -60,7 +63,7 @@ def parse_args() -> argparse.Namespace:
         ),
     )
     parser.add_argument(
-        "--title-only", default=None, help="Restrict search to this phrase appearing in the title"
+        "--title-only", default="data scientist", help="Restrict search to this phrase appearing in the title"
     )
     parser.add_argument(
         "--full-time", type=int, default=1, choices=[0, 1], help="1 for full-time only, 0 for no filter"

@@ -218,7 +218,8 @@ there."
 ### What Phase 1 builds
 
 1. An Adzuna search call, parameterized by keyword, location, minimum
-   salary, and max posting age (`max_days_old`, defaulting to 14).
+   salary, and max posting age (`max_days_old`) -- see "1. Adzuna search"
+   below for the actual CLI defaults.
 2. For each result, a check against `postings` on `(source, external_id)`
    -- if a row already exists, skip capture entirely for that result (see
    "Skip already-seen postings before capture" below). Otherwise, an
@@ -252,17 +253,28 @@ application tracker is Phase 3, later still -- see that section.
 
 `GET https://api.adzuna.com/v1/api/jobs/{country}/search/{page}` with
 `app_id`, `app_key`, `what` (keyword), `where` (location), `salary_min`,
-`max_days_old` (defaults to 14 -- keeps discovery focused on postings
-still worth applying to, and keeps result volume, and therefore capture
-cost, bounded), `title_only` (optional phrase restricted to matching the
+`max_days_old`, `title_only` (optional phrase restricted to matching the
 posting's title specifically, on top of `what`'s full-text match), and
 `full_time` (`1` to filter to full-time postings only, `0` for no filter --
-defaults to `1`, confirmed to meaningfully change the result count in
-practice). Built against the real observed response shape (see
-`models/schema.py`'s `AdzunaResult`), not assumptions -- the exploration
-script this was originally verified against has since been deleted, its
-job done. Keep the attribution and rate-limit notes above in mind: this
-should run once or a few times a day, not in a tight loop.
+confirmed to meaningfully change the result count in practice). Built
+against the real observed response shape (see `models/schema.py`'s
+`AdzunaResult`), not assumptions -- the exploration script this was
+originally verified against has since been deleted, its job done. Keep
+the attribution and rate-limit notes above in mind: this should run once
+or a few times a day, not in a tight loop.
+
+`agents/discovery.py`'s CLI defaults reflect the actual query this has
+been run with in practice, not placeholder values -- `--what "remote"
+--where "united states" --title-only "data scientist" --max-days-old 3
+--salary-min 200000` -- so a bare `uv run agents/discovery.py` with no
+flags reproduces that search rather than some generic example.
+`scripts/run_pipeline.py`'s own CLI mirrors these same defaults (it just
+passes them through to `discovery.py`), and `agents.yml`'s
+`workflow_dispatch.inputs` mirror them a third time, in their `default:`
+fields -- three places, kept in sync deliberately since each is a
+different point of control (direct CLI, the chained pipeline, and the
+scheduled/manual CI trigger) and none of them should silently drift from
+what's actually being searched for.
 
 **`salary_min` must be serialized as a plain integer.** Adzuna's API
 returns a 400 if `salary_min` is serialized with a decimal point (e.g.

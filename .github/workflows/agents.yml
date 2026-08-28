@@ -13,13 +13,19 @@ on:
     inputs:
       what:
         description: "Keyword(s) to search for"
-        default: "data scientist"
+        default: "remote"
       where:
         description: "Location to search in"
         default: "united states"
+      title_only:
+        description: "Restrict search to this phrase appearing in the title"
+        default: "data scientist"
+      salary_min:
+        description: "Minimum salary"
+        default: "200000"
       max_days_old:
         description: "Max posting age in days"
-        default: "1"
+        default: "3"
       results_per_page:
         description: "Results per Adzuna page"
         default: "20"
@@ -57,9 +63,11 @@ jobs:
       SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
       # Fall back to the inputs' own defaults when this fires on `schedule`
       # (no `inputs` on that trigger) rather than `workflow_dispatch`.
-      PIPELINE_WHAT: ${{ github.event.inputs.what || 'data scientist' }}
+      PIPELINE_WHAT: ${{ github.event.inputs.what || 'remote' }}
       PIPELINE_WHERE: ${{ github.event.inputs.where || 'united states' }}
-      PIPELINE_MAX_DAYS_OLD: ${{ github.event.inputs.max_days_old || '1' }}
+      PIPELINE_TITLE_ONLY: ${{ github.event.inputs.title_only || 'data scientist' }}
+      PIPELINE_SALARY_MIN: ${{ github.event.inputs.salary_min || '200000' }}
+      PIPELINE_MAX_DAYS_OLD: ${{ github.event.inputs.max_days_old || '3' }}
       PIPELINE_RESULTS_PER_PAGE: ${{ github.event.inputs.results_per_page || '20' }}
       PIPELINE_MAX_PAGES: ${{ github.event.inputs.max_pages || '5' }}
       PIPELINE_FULL_TIME: ${{ github.event.inputs.full_time || '1' }}
@@ -92,6 +100,8 @@ jobs:
           uv run scripts/run_pipeline.py
           --what "$PIPELINE_WHAT"
           --where "$PIPELINE_WHERE"
+          --title-only "$PIPELINE_TITLE_ONLY"
+          --salary-min "$PIPELINE_SALARY_MIN"
           --max-days-old "$PIPELINE_MAX_DAYS_OLD"
           --results-per-page "$PIPELINE_RESULTS_PER_PAGE"
           --max-pages "$PIPELINE_MAX_PAGES"
