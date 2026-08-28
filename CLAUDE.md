@@ -1072,17 +1072,30 @@ Needed from Phase 1:
 - Pydantic v2 for every shared data model.
 - `psycopg` (v3) for Postgres access. `db/db.py`'s `_connect()` is the
   only place `DATABASE_URL` is ever passed to `psycopg.connect()` -- a
-  failed connection is re-raised as a bare `RuntimeError` with `from
-  None`, deliberately dropping the original `psycopg.OperationalError`
-  and its traceback rather than letting it propagate. Reasoning: the
-  pipeline runs in GitHub Actions on a public repo (see "Scheduling and
-  triggering"), where workflow logs are public, and libpq/psycopg
-  connection-error text can echo back connection parameters -- an
-  uncaught traceback is the realistic way `DATABASE_URL` (which contains
-  the Neon password) leaks, not a deliberate print anywhere in this
-  codebase. Confirmed directly: pointed `_connect()` at a fake DSN with an
-  embedded password and printed the full traceback -- the password did
-  not appear anywhere in it.
+  failed connection is re-raised as a `RuntimeError` with `from None`
+  (dropping the original traceback, which could otherwise show
+  `DATABASE_URL` a second time via a locals() dump) and the
+  connection-string portion of the error message redacted via regex
+  (any `scheme://...` substring, not just an exact `DATABASE_URL` match --
+  covers libpq text that reconstructs or truncates the DSN rather than
+  quoting it verbatim). Reasoning: the pipeline runs in GitHub Actions on
+  a public repo (see "Scheduling and triggering"), where workflow logs
+  are public, and libpq/psycopg connection-error text can echo back
+  connection parameters -- an uncaught traceback is the realistic way
+  `DATABASE_URL` (which contains the Neon password) leaks, not a
+  deliberate print anywhere in this codebase.
+  - **This started as a full-message redaction** ("Database connection
+    failed (error details withheld from logs)", no detail at all) and was
+    loosened to redact only the URI specifically -- confirmed necessary
+    in practice: the first version made a real CI connection failure
+    completely undiagnosable (auth failure vs. wrong host vs. timeout
+    vs. IP-allowlist block all looked identical), which defeats the
+    point of surfacing it as a distinct error in the first place. Both
+    versions confirmed directly (not assumed): pointed `_connect()` at a
+    fake DSN with an embedded password and printed the resulting
+    message -- the password never appeared, in either version, but only
+    the current one also preserves the actual libpq error text (e.g.
+    "failed to resolve host ...").
 
 Added in Phase 2:
 - Anthropic Python SDK (`anthropic`), raw (not `claude_agent_sdk`), for

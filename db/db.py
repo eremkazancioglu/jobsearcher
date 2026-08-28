@@ -14,6 +14,7 @@ run history for the pipeline health tab).
 """
 
 import os
+import re
 
 import psycopg
 from psycopg.rows import class_row
@@ -25,19 +26,31 @@ load_dotenv(override=True)
 
 DATABASE_URL = os.environ["DATABASE_URL"]
 
+# Matches any scheme://... URI (postgres://, postgresql://, etc), not just
+# an exact DATABASE_URL match -- covers libpq error text that reconstructs
+# or truncates the DSN rather than quoting it verbatim.
+_DSN_RE = re.compile(r"[a-zA-Z][a-zA-Z0-9+.-]*://\S+")
+
 
 def _connect() -> psycopg.Connection:
     """The only place DATABASE_URL is ever passed to psycopg. A failed
-    connection is re-raised as a bare RuntimeError with `from None` --
-    libpq/psycopg connection-error text can echo back connection
-    parameters, and this runs in GitHub Actions on a public repo where
-    workflow logs are public; an uncaught traceback is the realistic way a
-    secret leaks, not a deliberate print. Every function below goes through
-    this instead of calling psycopg.connect(DATABASE_URL) directly."""
+    connection is re-raised as a RuntimeError with the connection-string
+    portion of the error redacted, `from None` to also drop the original
+    traceback (which could otherwise show DATABASE_URL a second time, e.g.
+    in a locals() dump) -- this runs in GitHub Actions on a public repo
+    where workflow logs are public. Redacting just the URI (not the whole
+    message, as an earlier version of this did) keeps the actually useful
+    part of libpq's error text (auth failure vs. timeout vs. unreachable
+    host, etc.) visible for debugging, which a fully-blanked message
+    didn't -- confirmed necessary in practice, see git history. Every
+    function below goes through this instead of calling
+    psycopg.connect(DATABASE_URL) directly."""
     try:
         return psycopg.connect(DATABASE_URL)
-    except psycopg.OperationalError:
-        raise RuntimeError("Database connection failed (error details withheld from logs)") from None
+    except psycopg.OperationalError as e:
+        message = str(e).replace(DATABASE_URL, "[redacted]")
+        message = _DSN_RE.sub("[redacted]", message)
+        raise RuntimeError(f"Database connection failed: {message}") from None
 
 
 def posting_exists(source: str, external_id: str) -> bool:
