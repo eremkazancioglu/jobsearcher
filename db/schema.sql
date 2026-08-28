@@ -42,6 +42,10 @@ create table postings (
     dismissed_at timestamptz,              -- human dismissal from "new matches" (Streamlit) --
                                             -- distinct from applied_at: a dismiss says "not
                                             -- interested", not "already applied"
+    digested_at timestamptz,               -- set by send_digest.py once included in a Slack
+                                            -- digest -- agent-set bookkeeping, not a human
+                                            -- signal like dismissed_at/applied_at; keeps a
+                                            -- posting from being sent more than once
     discovered_at timestamptz not null default now(),
     applied_at timestamptz,                -- set by the human, via Streamlit
     application_status text not null default 'not_applied'

@@ -20,23 +20,31 @@ for a specific reason. Don't re-derive from scratch; extend from here.
 
 ## How this document is organized
 
-Two phases, built in order, not in parallel:
+Three phases, built in order, not in parallel:
 
 - **Phase 1** — discovery (Adzuna) and full posting capture. Build this
   completely and validate it against real postings before starting Phase 2.
-- **Phase 2** — everything downstream of a captured posting: fit
-  categorization, company research, the application tracker, the digest,
-  the dashboard, and full observability. This depends on Phase 1's output
-  (rows already sitting in `postings`) and extends it — it doesn't get
-  built alongside Phase 1.
+- **Phase 2** — everything downstream of a captured posting that doesn't
+  depend on tracking a live application: fit categorization, the Slack
+  digest, the dashboard, and full observability. This depends on Phase 1's
+  output (rows already sitting in `postings`) and extends it — it doesn't
+  get built alongside Phase 1.
+- **Phase 3** — the application tracker (Gmail-based). Deliberately split
+  out from Phase 2, not bundled with it -- it's a genuinely separate
+  concern (reading email, OAuth setup, a different failure surface) from
+  "assess and surface postings," and splitting it out means Phase 2's
+  value (categorized matches, a working digest and dashboard) ships
+  without waiting on Gmail integration. See "Phase 3" below.
 
-Everything outside the two phase sections (data model, rationale,
-sourcing, scheduling, monitoring, environments, stack, repo layout, env
-vars) is shared reference material both phases draw on, defined once so it
-doesn't drift between them.
+Everything outside the phase sections (data model, rationale, sourcing,
+scheduling, monitoring, environments, stack, repo layout, env vars) is
+shared reference material all phases draw on, defined once so it doesn't
+drift between them.
 
 When Phase 1 is confirmed working, the instruction to continue is just
-"go on with Phase 2" — the section below has what's needed.
+"go on with Phase 2" — the section below has what's needed. Phase 3 is a
+separate, later, explicit decision -- not an automatic follow-on once
+Phase 2 is done.
 
 ## Data model (Postgres / Neon)
 
@@ -81,6 +89,8 @@ create table postings (
     dismissed_at timestamptz,              -- human "not interested" from Streamlit's "new
                                             -- matches" tab -- distinct from applied_at, see
                                             -- Phase 2's "Streamlit dashboard" section
+    digested_at timestamptz,               -- set by send_digest.py once sent -- agent-set
+                                            -- bookkeeping, not a human signal like the two above
     discovered_at timestamptz not null default now(),
     applied_at timestamptz,                -- set by the human, via Streamlit
     application_status text not null default 'not_applied'
@@ -231,12 +241,12 @@ there."
 
 ### Explicitly out of scope for Phase 1
 
-Fit categorization, company culture/product research, the application
-tracker, the Slack digest, the Streamlit dashboard, the full
+Fit categorization, the Slack digest, the Streamlit dashboard, the full
 Langfuse/`agent_runs`/`STATUS.json` monitoring stack (basic error handling
 and logging is fine for now — the full stack is worth the setup once this
 is a scheduled job, not before), and dedicated Greenhouse/Lever/Ashby API
-integrations (see below for why). All of these are Phase 2.
+integrations (see below for why). All of these are Phase 2. The
+application tracker is Phase 3, later still -- see that section.
 
 ### 1. Adzuna search
 
@@ -722,10 +732,11 @@ reading the logs closely. Needed once per machine/environment this runs on
 
 ---
 
-## Phase 2: Categorization, research, tracking, and delivery
+## Phase 2: Categorization, delivery, and observability
 
 Builds on Phase 1's output — reads postings Phase 1 already captured,
-doesn't redo discovery or capture.
+doesn't redo discovery or capture. Does not include the application
+tracker -- see "Phase 3" below for why that's split out.
 
 ### What Phase 2 builds
 
@@ -803,12 +814,23 @@ doesn't redo discovery or capture.
     `usage` block against Haiku 4.5's published per-token pricing, since
     the raw SDK (unlike `claude_agent_sdk`'s `ResultMessage`) doesn't
     return a pre-computed `total_cost_usd`.
-- **Application tracker**: reads email (Gmail, read-only scope) for
-  postings where `applied_at is not null` (set by the human via
-  Streamlit — see rationale above), and updates `application_status` plus
-  logs to `application_events` as things happen (interview scheduled,
-  rejected, offer, etc).
-- **Slack digest** of newly strong/mixed postings after each run.
+- **Slack digest** (`digest/send_digest.py`) of newly strong/mixed
+  postings, one message per run covering everything pending, not one
+  message per posting. "Newly" is tracked with its own `digested_at`
+  column on `postings` (agent-set bookkeeping, distinct from
+  `dismissed_at`/`applied_at`, which are human signals) rather than
+  reusing `discovered_at` as a proxy -- categorization can lag discovery
+  by more than one run, so `discovered_at` alone would either resend
+  postings or silently skip ones categorized late. Reads
+  `match_category in ('strong','mixed')` and `digested_at`/`applied_at`/
+  `dismissed_at` all null -- no point digesting something the human
+  already acted on via the dashboard before a digest ran. All-or-nothing
+  per run: postings are only marked `digested_at` after the Slack send
+  succeeds, so a failed send is retried whole (not partially) on the next
+  run rather than needing to reconcile which postings actually went out.
+  Falls back to printing the same message to stdout when
+  `SLACK_WEBHOOK_URL` isn't set, per "Tools and stack" below -- confirmed
+  in practice against real categorized postings.
 - **Streamlit dashboard**: a "new matches" tab (`match_category in
   ('strong','mixed')`, not yet applied to or dismissed, with a
   discovered-within lookback filter -- 24h/3d/7d, radio-selected, default
@@ -852,17 +874,49 @@ job-hunt-agents/
 │   └── tracing.py               # Langfuse client + environment config
 ├── agents/
 │   ├── common.py                # AgentRunTracker: agent_runs + STATUS.json
-│   ├── categorize.py            # fit categorization, reads match_category IS NULL
-│   └── tracker.py               # Gmail-based, read-only scope
+│   └── categorize.py            # fit categorization, reads match_category IS NULL
 ├── digest/
 │   └── send_digest.py
 ├── dashboard/
 │   └── app.py                    # Streamlit: new matches / pipeline / health
 ├── scripts/
-│   └── run_pipeline.py           # entrypoint: discovery -> categorize -> tracker -> digest
+│   └── run_pipeline.py           # entrypoint: discovery -> categorize -> digest
 └── .github/
     └── workflows/
         └── agents.yml            # schedule + workflow_dispatch, STATUS.json commit step
+```
+
+---
+
+## Phase 3: Application tracking
+
+A separate, later phase -- not bundled into Phase 2 (see "How this
+document is organized" above for why). Only start this when explicitly
+asked, same as Phase 2 waits for "go on with Phase 2."
+
+### What Phase 3 builds
+
+- **Application tracker** (`agents/tracker.py`): reads email (Gmail,
+  read-only scope) for postings where `applied_at is not null` (set by the
+  human via Streamlit -- see "Why `applied_at` is set by the human, not
+  inferred by an agent" above), and updates `application_status` plus logs
+  to `application_events` as things happen (interview scheduled, rejected,
+  offer, etc). Only ever operates on postings a human has already marked
+  applied -- it watches email for what happens *after* a human-confirmed
+  application, it doesn't try to detect the application itself.
+- **Gmail OAuth setup** is a one-time interactive step (not something to
+  automate away) -- `tracker.py` can be scaffolded with clear TODOs for
+  this before the OAuth flow is actually wired up, same as it was
+  suggested to stay a stub in earlier drafts of this plan.
+- **`scripts/run_pipeline.py`** gets `tracker.py` added into its sequence
+  once this phase exists: discovery -> categorize -> tracker -> digest.
+
+### Suggested files for Phase 3
+
+```
+job-hunt-agents/
+└── agents/
+    └── tracker.py                # Gmail-based, read-only scope
 ```
 
 ---
@@ -1043,7 +1097,9 @@ LANGFUSE_PUBLIC_KEY=
 LANGFUSE_SECRET_KEY=
 LANGFUSE_HOST=https://cloud.langfuse.com
 LANGFUSE_TRACING_ENVIRONMENT=      # development locally, production in CI
-SLACK_WEBHOOK_URL=
+SLACK_WEBHOOK_URL=                 # send_digest.py falls back to stdout if unset
+
+# Added in Phase 3
 GMAIL_CREDENTIALS_JSON=            # read-only Gmail scope only
 ```
 
@@ -1070,12 +1126,15 @@ the workflow needs `permissions: contents: write` to commit STATUS.json.
    `match_category is null`.
 7. `dashboard/app.py` -- once there's categorized data to look at,
    iterating on the rest gets much easier.
-8. `agents/tracker.py` (can stay a stub with clear TODOs for the Gmail
-   OAuth setup -- that's a one-time interactive step, not something to
-   automate away).
-9. `digest/send_digest.py`.
-10. `.github/workflows/agents.yml`, wired to the secrets above, with the
-    STATUS.json commit step.
-11. `docker-compose.yml` + `Dockerfile` + README last, once the app
+8. `digest/send_digest.py`.
+9. `.github/workflows/agents.yml`, wired to the secrets above, with the
+   STATUS.json commit step.
+10. `docker-compose.yml` + `Dockerfile` + README last, once the app
     actually runs, so setup instructions are accurate rather than
     aspirational.
+
+**Only once explicitly asked for, Phase 3:**
+11. `agents/tracker.py` (can stay a stub with clear TODOs for the Gmail
+    OAuth setup -- that's a one-time interactive step, not something to
+    automate away). Wire into `scripts/run_pipeline.py`'s sequence once
+    built.

@@ -1,10 +1,18 @@
 {
   "categorize": {
     "status": "success",
-    "started_at": "2026-08-28T16:36:33.300125+00:00",
-    "finished_at": "2026-08-28T16:36:40.630096+00:00",
-    "items_processed": 3,
-    "items_new": 3,
+    "started_at": "2026-08-28T18:17:02.343043+00:00",
+    "finished_at": "2026-08-28T18:18:10.222238+00:00",
+    "items_processed": 26,
+    "items_new": 26,
+    "error_message": null
+  },
+  "digest": {
+    "status": "success",
+    "started_at": "2026-08-28T18:18:19.285502+00:00",
+    "finished_at": "2026-08-28T18:18:19.725222+00:00",
+    "items_processed": 10,
+    "items_new": 10,
     "error_message": null
   }
 }

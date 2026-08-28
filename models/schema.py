@@ -86,6 +86,7 @@ class Posting(BaseModel):
     match_category: Optional[MatchCategory] = None
     match_notes: Optional[str] = None
     dismissed_at: Optional[datetime] = None
+    digested_at: Optional[datetime] = None
     discovered_at: Optional[datetime] = None
     applied_at: Optional[datetime] = None
     application_status: ApplicationStatus = "not_applied"

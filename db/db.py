@@ -154,6 +154,37 @@ def dismiss_posting(posting_id) -> None:
         conn.commit()
 
 
+def fetch_undigested_matches() -> list[Posting]:
+    """strong/mixed postings not yet sent in a Slack digest -- send_digest.py's
+    input. Filtered to applied_at/dismissed_at is null too: no point
+    digesting something the human has already acted on by the time the
+    digest agent gets to it (e.g. dismissed straight from the dashboard
+    before a digest ran)."""
+    with psycopg.connect(DATABASE_URL) as conn:
+        with conn.cursor(row_factory=class_row(Posting)) as cur:
+            cur.execute(
+                "select * from postings where match_category in ('strong','mixed') "
+                "and applied_at is null and dismissed_at is null and digested_at is null "
+                "order by discovered_at asc"
+            )
+            return cur.fetchall()
+
+
+def mark_digested(posting_ids: list) -> None:
+    """Bookkeeping only (see schema.sql's digested_at comment) -- called
+    once after a digest send succeeds, so a posting is never included in
+    more than one digest."""
+    if not posting_ids:
+        return
+    with psycopg.connect(DATABASE_URL) as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "update postings set digested_at = now() where id = any(%s)",
+                (posting_ids,),
+            )
+        conn.commit()
+
+
 def fetch_pipeline() -> list[Posting]:
     """Postings already applied to -- the dashboard's "pipeline" tab."""
     with psycopg.connect(DATABASE_URL) as conn:
