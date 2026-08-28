@@ -6,9 +6,10 @@ for the full technical spec and the reasoning behind each decision, see
 `CLAUDE.md`.
 
 The pipeline is being built in phases. This document currently covers
-**Phase 1: discovery and full posting capture** -- finding job postings
-and recovering their complete descriptions. It will grow as later phases
-(fit assessment, company research, application tracking) are built.
+**Phase 1** (discovery and full posting capture) and **Phase 2**
+(assessing fit and surfacing matches). Application tracking (reading
+email for what happens after you apply) is a later, separate phase and
+isn't covered here yet.
 
 ## Overview
 
@@ -22,6 +23,11 @@ Phase 1 has two jobs:
 Discovery is the easy part -- one API call. Capture is the hard part: job
 boards only ever show a snippet, so getting the real posting means
 tracking it down and reading it, and every site is laid out differently.
+
+Phase 2 takes it from there: once a posting's been fully captured, is it
+actually worth a look, and how does it actually get in front of a person?
+That's fit assessment, the dashboard, and the digest -- covered below,
+after capture.
 
 ## Step 1: Discovery
 
@@ -135,3 +141,70 @@ independently-found company page, or just the original snippet); salary
 information, along with whether that number was actually stated on the
 page or is an estimate; and the remote/hybrid/onsite classification, when
 one could be determined.
+
+## Step 3: Fit assessment
+
+Once a posting's been captured, it's judged against two separate
+documents, not one:
+
+- **A resume** -- what you're actually qualified to do.
+- **A preferences document** -- what you actually want: role type,
+  seniority, location or remote expectations, comp floor, industries to
+  avoid, anything else that isn't a qualification but still matters.
+
+Both count. A posting can be an excellent match on paper and still not be
+a real match if it violates something in the preferences (wrong location,
+wrong company size, missing a stated must-have) -- and the reverse is
+true too. Judging against both together is what catches that, rather than
+just checking "am I qualified" and stopping there.
+
+Each posting gets one of three ratings: **strong**, **mixed**, or
+**weak**, along with a one-line note explaining the reasoning (e.g. "great
+technical fit, but this is a large enterprise, not the startup environment
+you're looking for, and doesn't mention flexible PTO"). Every posting gets
+rated exactly once -- ratings aren't revisited or recomputed later, even
+if something changes. Only strong and mixed matches are ever shown to a
+person; weak ones are recorded (so the posting isn't re-evaluated on a
+future run) but never surfaced.
+
+## The dashboard
+
+A running, browsable view of everything the pipeline has assessed, with
+three sections:
+
+- **New matches** -- strong/mixed postings you haven't acted on yet, each
+  with the rating, the reasoning, salary/location/remote info, and a link
+  to the actual posting. A filter narrows this to postings found in the
+  last day, three days, or week. Two actions are available per posting:
+  mark it as one you're applying to (which moves it to "pipeline" below),
+  or dismiss it if it's not actually a fit -- dismissing just says "don't
+  show me this again," it doesn't delete anything.
+- **Pipeline** -- everything you've marked as applied to, with its current
+  status. If a posting was marked applied by mistake, it can be removed
+  from the pipeline and it reappears back in "new matches."
+- **Pipeline health** -- a log of every automated run (discovery, fit
+  assessment, digest), so a failed or partial run is visible at a glance
+  instead of needing to dig through logs.
+
+## The digest
+
+A periodic summary message -- sent to Slack, or just printed if no Slack
+channel is configured -- listing every new strong/mixed match found since
+the last digest went out. Nothing is ever listed twice: once a posting's
+been included in a digest, it's marked as sent, even if it's still sitting
+un-acted-on in "new matches." If a digest send fails partway, nothing from
+that attempt gets marked sent, so the next run tries the whole batch
+again rather than silently dropping some of it.
+
+## Running it automatically
+
+The whole sequence -- discovery, then fit assessment, then the digest --
+is chained together into a single automated pipeline, confirmed working
+end-to-end against real postings including a real Slack delivery. It can
+be triggered on demand at any time, and is designed to also run on a
+regular schedule (currently off while it's still being validated) so new
+postings get discovered, assessed, and delivered without anyone having to
+kick it off by hand. Whether triggered manually or on a schedule, the
+search terms it runs with -- keyword, location, salary floor, how far
+back to look -- are visible and can be adjusted for that run without
+touching any code.
