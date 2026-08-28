@@ -42,11 +42,16 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import anthropic
+from langfuse import observe
 
 from agents.common import AgentRunTracker
 from agents.preferences import load_preferences
 from agents.resume import load_resume
 from db.db import update_posting_category, fetch_uncategorized_postings
+# Import side effect: initializes the Langfuse client and instruments the
+# raw Anthropic SDK client below (AnthropicInstrumentor) -- see
+# observability/tracing.py.
+import observability.tracing  # noqa: F401
 
 logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
 logger = logging.getLogger(__name__)
@@ -132,6 +137,7 @@ def get_total_cost_usd() -> float:
     return _total_cost_usd
 
 
+@observe(name="categorize_posting")
 async def _categorize(resume: str, preferences: str, posting) -> dict:
     prompt = (
         "Judge this job posting's fit for the candidate below, against "

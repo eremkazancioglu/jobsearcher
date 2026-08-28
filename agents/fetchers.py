@@ -43,6 +43,8 @@ from claude_agent_sdk import ClaudeAgentOptions, ResultMessage, query
 from playwright.async_api import async_playwright
 
 from models.schema import AdzunaResult, DescriptionSource
+from observability.tracing import langfuse
+from langfuse import observe
 
 logger = logging.getLogger(__name__)
 
@@ -218,6 +220,7 @@ async def _run_claude_json(
     allowed_tools: Optional[list[str]] = None,
     permission_mode: Optional[str] = None,
     max_turns: int = 1,
+    trace_name: str = "claude_agent_sdk_call",
 ) -> Optional[dict]:
     options = ClaudeAgentOptions(
         output_format={"type": "json_schema", "schema": schema},
@@ -241,10 +244,21 @@ async def _run_claude_json(
         stderr=_handle_claude_cli_stderr,
     )
 
-    async def _run() -> Optional[dict]:
+    # Manual generation, not auto-instrumentation: claude_agent_sdk launches
+    # a CLI subprocess rather than calling a Python Anthropic client object,
+    # so OTel's AnthropicInstrumentor (used for categorize.py's raw SDK
+    # calls) can't see inside it -- see observability/tracing.py. usage/cost
+    # come straight from ResultMessage, which the SDK already computes; not
+    # re-derived or estimated here.
+    async def _run(generation) -> Optional[dict]:
         async for message in query(prompt=prompt, options=options):
             if isinstance(message, ResultMessage):
                 _record_cost(message)
+                generation.update(
+                    output=message.structured_output,
+                    usage_details=dict(message.usage) if message.usage else None,
+                    cost_details={"total_cost": message.total_cost_usd} if message.total_cost_usd else None,
+                )
                 if message.is_error:
                     # Demoted from warning: this is an expected, handled
                     # outcome (budget cap hit, timeout-ish failure, etc.)
@@ -256,14 +270,19 @@ async def _run_claude_json(
                 return message.structured_output
         return None
 
-    try:
-        return await asyncio.wait_for(_run(), timeout=CLAUDE_QUERY_TIMEOUT_S)
-    except asyncio.TimeoutError:
-        logger.warning("Claude query timed out after %ss", CLAUDE_QUERY_TIMEOUT_S)
-        return None
-    except Exception:
-        logger.exception("Claude query failed")
-        return None
+    with langfuse.start_as_current_observation(
+        as_type="generation", name=trace_name, model=CLAUDE_MODEL, input=prompt,
+    ) as generation:
+        try:
+            return await asyncio.wait_for(_run(generation), timeout=CLAUDE_QUERY_TIMEOUT_S)
+        except asyncio.TimeoutError:
+            logger.warning("Claude query timed out after %ss", CLAUDE_QUERY_TIMEOUT_S)
+            generation.update(level="ERROR", status_message="timeout")
+            return None
+        except Exception:
+            logger.exception("Claude query failed")
+            generation.update(level="ERROR", status_message="exception")
+            return None
 
 
 def _fetch_plain(url: str) -> Optional[PageFetch]:
@@ -463,7 +482,7 @@ async def _confirm_and_extract(text: str, adzuna: AdzunaResult) -> Optional[dict
         "way).\n\n"
         f"Page text:\n{text[:18000]}"
     )
-    return await _run_claude_json(prompt, CONFIRM_AND_EXTRACT_SCHEMA)
+    return await _run_claude_json(prompt, CONFIRM_AND_EXTRACT_SCHEMA, trace_name="confirm_and_extract")
 
 
 def _normalize_work_location(value: Any) -> Optional[str]:
@@ -485,7 +504,7 @@ async def _classify_work_location(text: str) -> Optional[str]:
         "way -- don't guess.\n\n"
         f"Job description:\n{text[:8000]}"
     )
-    result = await _run_claude_json(prompt, WORK_LOCATION_SCHEMA)
+    result = await _run_claude_json(prompt, WORK_LOCATION_SCHEMA, trace_name="classify_work_location")
     return _normalize_work_location(result.get("work_location")) if result else None
 
 
@@ -514,6 +533,7 @@ async def _web_search(query_text: str) -> list[str]:
         # structured-output call. 3 left zero margin and silently truncated
         # mid-call; give it real headroom.
         max_turns=6,
+        trace_name="tier3_web_search",
     )
     if not result:
         logger.info("Web search call failed or returned nothing for %r", query_text)
@@ -556,6 +576,7 @@ async def _try_confirmed_extraction(text: Optional[str], adzuna: AdzunaResult) -
     return result
 
 
+@observe(name="capture_posting")
 async def capture(adzuna: AdzunaResult) -> CaptureResult:
     """Best-effort full posting capture. Always returns a result -- degrades
     to Adzuna's snippet rather than raising when nothing works."""

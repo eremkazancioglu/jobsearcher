@@ -1,10 +1,10 @@
 {
   "categorize": {
     "status": "success",
-    "started_at": "2026-08-28T20:15:02.869861+00:00",
-    "finished_at": "2026-08-28T20:15:25.819308+00:00",
-    "items_processed": 8,
-    "items_new": 8,
+    "started_at": "2026-08-28T21:06:05.259758+00:00",
+    "finished_at": "2026-08-28T21:06:07.775935+00:00",
+    "items_processed": 1,
+    "items_new": 1,
     "error_message": null
   },
   "digest": {

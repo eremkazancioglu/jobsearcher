@@ -25,9 +25,13 @@ of how it actually works, see [`METHODOLOGY.md`](METHODOLOGY.md).
   webhook is configured.
 - **`scripts/run_pipeline.py`** -- chains discovery -> categorize ->
   digest into a single entrypoint, used both locally and in CI.
+- **Langfuse tracing** (`observability/tracing.py`) -- every LLM call
+  shows up as its own trace with the full prompt/response, tokens, and
+  cost, not just the run-level summary `agent_runs` gives. Optional --
+  silently no-ops without `LANGFUSE_PUBLIC_KEY` set.
 
 Not yet built: company research (deliberately out of scope), the
-application tracker (a later, separate phase), Langfuse tracing.
+application tracker (a later, separate phase).
 
 ## Setup
 
@@ -75,6 +79,15 @@ Requires [`uv`](https://docs.astral.sh/uv/) and Python 3.12+.
      free-prose preferences doc live; see `agents/preferences.py`'s
      docstring for what a preferences doc should cover).
    - `SLACK_WEBHOOK_URL` -- optional; the digest prints to stdout if unset.
+   - `LANGFUSE_PUBLIC_KEY` / `LANGFUSE_SECRET_KEY` / `LANGFUSE_BASE_URL` --
+     optional per-LLM-call tracing; unset means tracing silently no-ops.
+     Get keys from [cloud.langfuse.com](https://cloud.langfuse.com)'s
+     Settings -> API Keys. **Langfuse Cloud has separate regions with
+     different base URLs** (EU: `https://cloud.langfuse.com`, US:
+     `https://us.cloud.langfuse.com`) -- check your project's actual
+     region (the URL in your browser while logged in) before setting
+     `LANGFUSE_BASE_URL`; the wrong region fails auth even with correct
+     keys.
 
 ## Running it
 
