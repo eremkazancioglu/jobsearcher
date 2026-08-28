@@ -26,8 +26,22 @@ load_dotenv(override=True)
 DATABASE_URL = os.environ["DATABASE_URL"]
 
 
+def _connect() -> psycopg.Connection:
+    """The only place DATABASE_URL is ever passed to psycopg. A failed
+    connection is re-raised as a bare RuntimeError with `from None` --
+    libpq/psycopg connection-error text can echo back connection
+    parameters, and this runs in GitHub Actions on a public repo where
+    workflow logs are public; an uncaught traceback is the realistic way a
+    secret leaks, not a deliberate print. Every function below goes through
+    this instead of calling psycopg.connect(DATABASE_URL) directly."""
+    try:
+        return psycopg.connect(DATABASE_URL)
+    except psycopg.OperationalError:
+        raise RuntimeError("Database connection failed (error details withheld from logs)") from None
+
+
 def posting_exists(source: str, external_id: str) -> bool:
-    with psycopg.connect(DATABASE_URL) as conn:
+    with _connect() as conn:
         with conn.cursor() as cur:
             cur.execute(
                 "select 1 from postings where source = %s and external_id = %s",
@@ -37,7 +51,7 @@ def posting_exists(source: str, external_id: str) -> bool:
 
 
 def insert_posting(posting: Posting) -> None:
-    with psycopg.connect(DATABASE_URL) as conn:
+    with _connect() as conn:
         with conn.cursor() as cur:
             cur.execute(
                 """
@@ -76,14 +90,14 @@ def fetch_uncategorized_postings() -> list[Posting]:
     """Postings still awaiting fit categorization -- categorize.py's input.
     Oldest first, so a run that doesn't get through everything still makes
     forward progress on the longest-waiting postings first."""
-    with psycopg.connect(DATABASE_URL) as conn:
+    with _connect() as conn:
         with conn.cursor(row_factory=class_row(Posting)) as cur:
             cur.execute("select * from postings where match_category is null order by discovered_at asc")
             return cur.fetchall()
 
 
 def update_posting_category(posting_id, match_category: str, match_notes: str) -> None:
-    with psycopg.connect(DATABASE_URL) as conn:
+    with _connect() as conn:
         with conn.cursor() as cur:
             cur.execute(
                 "update postings set match_category = %s, match_notes = %s where id = %s",
@@ -93,7 +107,7 @@ def update_posting_category(posting_id, match_category: str, match_notes: str) -
 
 
 def insert_agent_run(run: AgentRun) -> None:
-    with psycopg.connect(DATABASE_URL) as conn:
+    with _connect() as conn:
         with conn.cursor() as cur:
             cur.execute(
                 """
@@ -137,7 +151,7 @@ def fetch_new_matches(since_hours: int | None = None) -> list[Posting]:
         query += " and discovered_at >= now() - (%s * interval '1 hour')"
         params = (since_hours,)
     query += " order by discovered_at desc"
-    with psycopg.connect(DATABASE_URL) as conn:
+    with _connect() as conn:
         with conn.cursor(row_factory=class_row(Posting)) as cur:
             cur.execute(query, params)
             return cur.fetchall()
@@ -148,7 +162,7 @@ def dismiss_posting(posting_id) -> None:
     mark_as_applied. Doesn't delete the posting, just drops it out of "new
     matches"; a notes/reason field can be added later without changing this
     shape (not built yet -- not needed until it's actually wanted)."""
-    with psycopg.connect(DATABASE_URL) as conn:
+    with _connect() as conn:
         with conn.cursor() as cur:
             cur.execute("update postings set dismissed_at = now() where id = %s", (posting_id,))
         conn.commit()
@@ -160,7 +174,7 @@ def fetch_undigested_matches() -> list[Posting]:
     digesting something the human has already acted on by the time the
     digest agent gets to it (e.g. dismissed straight from the dashboard
     before a digest ran)."""
-    with psycopg.connect(DATABASE_URL) as conn:
+    with _connect() as conn:
         with conn.cursor(row_factory=class_row(Posting)) as cur:
             cur.execute(
                 "select * from postings where match_category in ('strong','mixed') "
@@ -176,7 +190,7 @@ def mark_digested(posting_ids: list) -> None:
     more than one digest."""
     if not posting_ids:
         return
-    with psycopg.connect(DATABASE_URL) as conn:
+    with _connect() as conn:
         with conn.cursor() as cur:
             cur.execute(
                 "update postings set digested_at = now() where id = any(%s)",
@@ -187,7 +201,7 @@ def mark_digested(posting_ids: list) -> None:
 
 def fetch_pipeline() -> list[Posting]:
     """Postings already applied to -- the dashboard's "pipeline" tab."""
-    with psycopg.connect(DATABASE_URL) as conn:
+    with _connect() as conn:
         with conn.cursor(row_factory=class_row(Posting)) as cur:
             cur.execute("select * from postings where applied_at is not null order by applied_at desc")
             return cur.fetchall()
@@ -197,7 +211,7 @@ def mark_as_applied(posting_id) -> None:
     """The only way applied_at/application_status get set -- a direct human
     action from the dashboard, never inferred by an agent (see CLAUDE.md's
     "Why applied_at is set by the human, not inferred by an agent")."""
-    with psycopg.connect(DATABASE_URL) as conn:
+    with _connect() as conn:
         with conn.cursor() as cur:
             cur.execute(
                 "update postings set applied_at = now(), application_status = 'applied' where id = %s",
@@ -215,7 +229,7 @@ def remove_from_pipeline(posting_id) -> None:
     uncategorized-into-applied posting would. Same "human decides, agent
     never infers" reasoning as mark_as_applied -- this is a correction a
     person makes, not something derived."""
-    with psycopg.connect(DATABASE_URL) as conn:
+    with _connect() as conn:
         with conn.cursor() as cur:
             cur.execute("delete from application_events where posting_id = %s", (posting_id,))
             cur.execute(
@@ -226,7 +240,7 @@ def remove_from_pipeline(posting_id) -> None:
 
 
 def fetch_application_events(posting_id) -> list[ApplicationEvent]:
-    with psycopg.connect(DATABASE_URL) as conn:
+    with _connect() as conn:
         with conn.cursor(row_factory=class_row(ApplicationEvent)) as cur:
             cur.execute(
                 "select * from application_events where posting_id = %s order by detected_at desc",
@@ -237,7 +251,7 @@ def fetch_application_events(posting_id) -> list[ApplicationEvent]:
 
 def fetch_recent_agent_runs(limit: int = 50) -> list[AgentRun]:
     """Most recent agent_runs rows -- the dashboard's "pipeline health" tab."""
-    with psycopg.connect(DATABASE_URL) as conn:
+    with _connect() as conn:
         with conn.cursor(row_factory=class_row(AgentRun)) as cur:
             cur.execute("select * from agent_runs order by started_at desc limit %s", (limit,))
             return cur.fetchall()

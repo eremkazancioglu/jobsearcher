@@ -1,0 +1,109 @@
+name: JobSearcher pipeline
+
+on:
+  # schedule:
+  #   # Best-effort, no timing SLA -- see CLAUDE.md's "Scheduling and
+  #   # triggering" for the known GitHub Actions quirks this runs into.
+  #   - cron: "0 13 * * *" # ~9am US Eastern (EDT); adjust to taste
+  workflow_dispatch:
+    # Same params scripts/run_pipeline.py's own CLI takes, surfaced here so
+    # the actual daily search is visible/editable in this file (and,
+    # separately, overridable per manual run from the Actions UI) rather
+    # than buried in a script's argparse defaults.
+    inputs:
+      what:
+        description: "Keyword(s) to search for"
+        default: "data scientist"
+      where:
+        description: "Location to search in"
+        default: "united states"
+      max_days_old:
+        description: "Max posting age in days"
+        default: "1"
+      results_per_page:
+        description: "Results per Adzuna page"
+        default: "20"
+      max_pages:
+        description: "Max Adzuna pages to fetch (each page is one rate-limited hit)"
+        default: "5"
+      full_time:
+        description: "1 = full-time only, 0 = no filter"
+        default: "1"
+
+# So the last step can commit STATUS.json back to the repo -- also resets
+# the 60-day scheduled-workflow inactivity clock as a side effect, see
+# CLAUDE.md's "Monitoring and observability".
+permissions:
+  contents: write
+
+# Prevent an overlapping run (e.g. a manual workflow_dispatch firing while
+# the scheduled run is still going) from double-spending Adzuna/Claude
+# budget against the same day's postings.
+concurrency:
+  group: jobsearcher-pipeline
+  cancel-in-progress: false
+
+jobs:
+  run-pipeline:
+    runs-on: ubuntu-latest
+    env:
+      ADZUNA_APP_ID: ${{ secrets.ADZUNA_APP_ID }}
+      ADZUNA_APP_KEY: ${{ secrets.ADZUNA_APP_KEY }}
+      ADZUNA_COUNTRY: us
+      ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+      DATABASE_URL: ${{ secrets.DATABASE_URL }} # point this secret at the `main` Neon branch, not `dev`
+      RESUME_PATH: personal/resume.md
+      PREFERENCES_PATH: personal/preferences.md
+      SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+      # Fall back to the inputs' own defaults when this fires on `schedule`
+      # (no `inputs` on that trigger) rather than `workflow_dispatch`.
+      PIPELINE_WHAT: ${{ github.event.inputs.what || 'data scientist' }}
+      PIPELINE_WHERE: ${{ github.event.inputs.where || 'united states' }}
+      PIPELINE_MAX_DAYS_OLD: ${{ github.event.inputs.max_days_old || '1' }}
+      PIPELINE_RESULTS_PER_PAGE: ${{ github.event.inputs.results_per_page || '20' }}
+      PIPELINE_MAX_PAGES: ${{ github.event.inputs.max_pages || '5' }}
+      PIPELINE_FULL_TIME: ${{ github.event.inputs.full_time || '1' }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v10
+        with:
+          enable-cache: true
+
+      - name: Install dependencies
+        run: uv sync
+
+      - name: Install Playwright Chromium
+        run: uv run playwright install --with-deps chromium
+
+      # personal/ is gitignored (see .gitignore's "Personal data" comment)
+      # since the resume/preferences files are personal data -- reconstructed
+      # here from repo secrets rather than committed. Base64-encoded so
+      # multiline markdown content survives the secrets round-trip cleanly.
+      - name: Restore personal documents
+        run: |
+          mkdir -p personal
+          echo "${{ secrets.RESUME_B64 }}" | base64 -d > "$RESUME_PATH"
+          echo "${{ secrets.PREFERENCES_B64 }}" | base64 -d > "$PREFERENCES_PATH"
+
+      - name: Run pipeline
+        run: >
+          uv run scripts/run_pipeline.py
+          --what "$PIPELINE_WHAT"
+          --where "$PIPELINE_WHERE"
+          --max-days-old "$PIPELINE_MAX_DAYS_OLD"
+          --results-per-page "$PIPELINE_RESULTS_PER_PAGE"
+          --max-pages "$PIPELINE_MAX_PAGES"
+          --full-time "$PIPELINE_FULL_TIME"
+
+      # Runs even if the pipeline step failed above -- STATUS.json should
+      # reflect a failed/partial run just as much as a successful one.
+      - name: Commit STATUS.json
+        if: always()
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add STATUS.json
+          git diff --cached --quiet || git commit -m "Update STATUS.json"
+          git push

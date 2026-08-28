@@ -1058,7 +1058,19 @@ Needed from Phase 1:
   reaches an LLM call -- see "Full posting capture" for the confirmed
   cost impact.
 - Pydantic v2 for every shared data model.
-- `psycopg` (v3) for Postgres access.
+- `psycopg` (v3) for Postgres access. `db/db.py`'s `_connect()` is the
+  only place `DATABASE_URL` is ever passed to `psycopg.connect()` -- a
+  failed connection is re-raised as a bare `RuntimeError` with `from
+  None`, deliberately dropping the original `psycopg.OperationalError`
+  and its traceback rather than letting it propagate. Reasoning: the
+  pipeline runs in GitHub Actions on a public repo (see "Scheduling and
+  triggering"), where workflow logs are public, and libpq/psycopg
+  connection-error text can echo back connection parameters -- an
+  uncaught traceback is the realistic way `DATABASE_URL` (which contains
+  the Neon password) leaks, not a deliberate print anywhere in this
+  codebase. Confirmed directly: pointed `_connect()` at a fake DSN with an
+  embedded password and printed the full traceback -- the password did
+  not appear anywhere in it.
 
 Added in Phase 2:
 - Anthropic Python SDK (`anthropic`), raw (not `claude_agent_sdk`), for
@@ -1103,8 +1115,39 @@ SLACK_WEBHOOK_URL=                 # send_digest.py falls back to stdout if unse
 GMAIL_CREDENTIALS_JSON=            # read-only Gmail scope only
 ```
 
-GitHub Actions (Phase 2) needs the same set as repository secrets, plus
-the workflow needs `permissions: contents: write` to commit STATUS.json.
+GitHub Actions (Phase 2, `.github/workflows/agents.yml`) needs the same
+set as repository secrets, plus `permissions: contents: write` to commit
+STATUS.json, plus two CI-only secrets not in the `.env` list above:
+**`RESUME_B64`** and **`PREFERENCES_B64`** -- base64 of the resume/
+preferences markdown files. `personal/` is gitignored (personal data), so
+CI can't just check it out the way it can everything else; the workflow's
+"Restore personal documents" step decodes these secrets into
+`personal/resume.md`/`personal/preferences.md` before the pipeline runs.
+Base64, not the raw file content, specifically so multiline markdown
+survives GitHub's secrets round-trip cleanly (a raw multiline secret value
+pasted into the GitHub UI is more failure-prone across newline handling
+than a single base64 line -- generate with e.g. `base64 -i
+personal/resume.md | pbcopy` locally, paste into the secret). `RESUME_PATH`/
+`PREFERENCES_PATH` are set directly as job-level `env:` in the workflow
+(`personal/resume.md`/`personal/preferences.md`), not read from a
+committed `.env` -- there is no `.env` file in CI at all; every other
+secret above is also passed the same way, via job-level `env:` referencing
+`secrets.*`, not written to a file first.
+
+**`scripts/run_pipeline.py`'s search params are surfaced as
+`workflow_dispatch.inputs`** (`what`, `where`, `max_days_old`,
+`results_per_page`, `max_pages`, `full_time` -- same names/meaning as
+`run_pipeline.py`'s own CLI flags), not left buried in the script's
+argparse defaults. Two reasons: visibility (anyone reading `agents.yml`
+sees exactly what daily search runs, without reading Python) and
+per-run configurability (triggering manually from the Actions UI lets you
+override any of them for that one run, e.g. a wider `--where` to spot-check
+coverage, without editing the workflow file). Job-level `env:` reads each
+via `github.event.inputs.<name> || '<default>'` -- the `||` fallback is
+required because `github.event.inputs` doesn't exist on a `schedule`
+trigger (no inputs there), so without it the scheduled run would pass
+empty strings through to `run_pipeline.py` instead of the intended
+defaults.
 
 ## Suggested build order
 
