@@ -1020,6 +1020,63 @@ covers ATS-hosted careers pages the same as any other company site.
   product, but using one swaps "I sourced this cleanly myself" for "I
   depend on a vendor's scraping being fine," and costs money past a small
   free tier.
+- **The Muse Jobs API v2** -- investigated in real depth (`explore_muse.py`
+  is kept as the reference, not deleted), has a real public API with a
+  real key, and gives full HTML job descriptions for free (no tiered
+  capture needed, unlike Adzuna). Parked anyway, confirmed in practice not
+  assumed:
+  - **No server-side keyword/title search at all** -- confirmed by testing
+    22 plausible param names against a live baseline, all silently
+    ignored. Client-side filtering only, meaning paying for full page
+    fetches just to check titles.
+  - **No date filter and no date-based sort** -- confirmed with a real
+    registered key too, not just unauthenticated access, so this isn't a
+    tier limitation. `descending` blends "trendiness, uniqueness,
+    newness" per the docs, but measured directly (1,000 results, position
+    vs. publication date): recent postings are statistically
+    indistinguishable from randomly distributed through the result
+    order. No way to efficiently ask "what's new since last time," which
+    is the core operation a daily discovery job needs.
+  - **Pagination hard-capped at page 99 (2,000 results), globally, for
+    any query** -- confirmed directly (`400 Value 'page' is too high`).
+    A query has to stay under 2,000 total matches for full, guaranteed
+    coverage to even be possible; broader categories (e.g. "Data and
+    Analytics" alone: 18,389 total) leave ~89% of results permanently
+    unreachable no matter how you page. A narrowed query
+    (`category=Data and Analytics, location=Flexible/Remote`: 995 total)
+    fit today, but the trajectory is the wrong direction -- and once a
+    query crosses 2,000, there's no sort to fall back on either (see
+    above), so coverage doesn't degrade gracefully, it just becomes
+    unreliable.
+  - **No way to tell a live posting from a closed one** -- no status
+    field anywhere on the job object, and confirmed directly that old
+    postings aren't purged: the oldest posting in a 995-result walk was
+    1,384 days old, and manually checking the oldest several confirmed
+    they're genuinely stale/closed, not still open. Dead and live
+    postings are indistinguishable in the data.
+  - The Companies API (`industry`/`location`/`size` filters, real
+    server-side filtering, confirmed working) was investigated as a way
+    to pre-filter which companies' jobs to pull, but doesn't fix any of
+    the above and measurably hurt recall in testing (dropped 38 real
+    "data scientist" matches to 3 by excluding "Large Size" companies --
+    Muse's size bucketing doesn't track "startup-feeling" the way
+    `categorize.py`'s LLM judgment against the real posting text already
+    does, better, downstream).
+  - Cross-source overlap with Adzuna, measured directly over a 14-day
+    window: ~15% of Muse results looked like duplicates of something
+    Adzuna already found (same title+company) -- would be additive, not
+    redundant, if the above problems didn't exist.
+  - Terms of Use ambiguity (a "no ML/AI use of Content" clause in the
+    general site ToS is incorporated by reference into the API terms'
+    license conditions) was worked through and read as most plausibly
+    aimed at training/fine-tuning on the corpus, not per-item LLM
+    categorization for personal use -- a judgment call, documented here
+    in case it's worth revisiting, not the deciding factor either way.
+  - **Bottom line: the free full-description win doesn't offset a source
+    with no way to find what's new, a hard ceiling that only gets worse
+    over time, and no way to filter out dead postings.** Revisit if the
+    API adds date filtering or a status field -- either would flip this
+    assessment.
 
 ## Scheduling and triggering
 
