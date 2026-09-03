@@ -1,26 +1,26 @@
 {
   "categorize": {
     "status": "success",
-    "started_at": "2026-09-03T01:40:29.901356+00:00",
-    "finished_at": "2026-09-03T01:40:29.901367+00:00",
-    "items_processed": 0,
-    "items_new": 0,
+    "started_at": "2026-09-03T15:20:31.700463+00:00",
+    "finished_at": "2026-09-03T15:20:51.381512+00:00",
+    "items_processed": 7,
+    "items_new": 7,
     "llm_errors": 0,
     "error_message": null
   },
   "digest": {
     "status": "success",
-    "started_at": "2026-09-03T01:40:30.570008+00:00",
-    "finished_at": "2026-09-03T01:40:31.373871+00:00",
-    "items_processed": 0,
-    "items_new": 0,
+    "started_at": "2026-09-03T15:20:52.500741+00:00",
+    "finished_at": "2026-09-03T15:20:52.927645+00:00",
+    "items_processed": 3,
+    "items_new": 3,
     "llm_errors": 0,
     "error_message": null
   },
   "pipeline": {
     "status": "success",
-    "started_at": "2026-09-03T01:40:19.689380+00:00",
-    "finished_at": "2026-09-03T01:40:31.605494+00:00",
+    "started_at": "2026-09-03T15:19:31.887356+00:00",
+    "finished_at": "2026-09-03T15:20:53.043021+00:00",
     "items_processed": 3,
     "items_new": 0,
     "llm_errors": 0,
@@ -28,10 +28,10 @@
   },
   "discovery": {
     "status": "success",
-    "started_at": "2026-09-03T01:40:25.858502+00:00",
-    "finished_at": "2026-09-03T01:40:27.817219+00:00",
-    "items_processed": 0,
-    "items_new": 0,
+    "started_at": "2026-09-03T15:19:38.063518+00:00",
+    "finished_at": "2026-09-03T15:20:29.477937+00:00",
+    "items_processed": 7,
+    "items_new": 7,
     "llm_errors": 0,
     "error_message": null
   }
