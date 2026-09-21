@@ -47,8 +47,18 @@ class BuiltInDigestParser(DigestParser):
             if not company or not title:
                 continue
 
+            # The location span is the one right after the LocationIcon
+            # image -- a separate "In Office"/"Remote" work-arrangement
+            # span sits before it in the same row, so this is what
+            # isolates location specifically rather than both.
+            loc_img = a.find("img", src=lambda s: s and "LocationIcon" in s)
+            loc_span = loc_img.find_next_sibling("span") if loc_img else None
+            location = loc_span.get_text(strip=True) if loc_span else None
+
             listings.append(
-                ParsedListing(title=title, company=company, platform=self.PLATFORM_NAME)
+                ParsedListing(
+                    title=title, company=company, platform=self.PLATFORM_NAME, location=location
+                )
             )
 
         return listings

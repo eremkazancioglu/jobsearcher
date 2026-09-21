@@ -1337,6 +1337,62 @@ additionally decodes `GMAIL_TOKEN_B64` into `personal/gmail_token.json`
 it specifically has to come from a production-published token, not a
 Testing-issued one).
 
+### Findings from the first real scheduled run
+
+Three fixes to `agents/fetchers.py` came directly out of reading a real
+run's logs line by line, not written speculatively -- all three benefit
+Adzuna's tier 3 too, since the code is shared:
+
+- **One retry on a failed Claude call, not zero.** `walk_candidates()`
+  used to give up on a candidate the instant its confirm+extract call
+  failed outright (`message.is_error` with no reason given, a timeout, a
+  dropped connection), indistinguishable in the log from a genuine
+  rejection. Confirmed as a real cost on a live run: the correct candidate
+  was the *first* one walked, its call failed with no error detail, and
+  every remaining candidate in the list was either a different role or
+  unfetchable -- the whole item got skipped for a reason that had nothing
+  to do with whether it was a match. `_run_claude_json` now retries once
+  (`CLAUDE_RETRY_ATTEMPTS = 2`) before giving up, mirroring
+  `mcp_servers/job_sources/server.py`'s existing retry-on-5xx for Adzuna
+  itself -- one retry, not unbounded, since a hit `max_budget_usd` cap or
+  a persistent problem won't clear on retry either.
+- **`page_title` as an extra deterministic signal in confirm+extract,
+  sourced from the JobPosting JSON-LD node's own `title` field, not the
+  raw HTML `<title>` tag.** Confirmed as a real false positive on the same
+  live run: a candidate page's extracted body text never restated the
+  role title at all (trafilatura's main-content extraction strips page
+  headings as chrome, the same way it strips nav/footer), and this
+  source's `PostingReference` has no location or snippet to cross-check
+  against either (see below), so confirm+extract had nothing to catch
+  that the page was actually for "Staff Software Engineer, Autonomy
+  Evaluation," not the reference's "Manager, AV Evaluation Framework" --
+  it confirmed a match on topic overlap alone. Sourcing `page_title` from
+  the raw `<title>` tag alone was tried first and confirmed insufficient:
+  the actual page (Workday-hosted) had an *empty* `<title>` tag, since the
+  client sets it after JS hydration that a plain fetch never runs -- the
+  same JobPosting JSON-LD block that already supplies the JD text
+  (`_extract_metadata_text()`) turned out to carry the real title too, so
+  `_extract_metadata_title()` checks that first and falls back to the raw
+  tag only for pages with no JobPosting data at all. Re-tested directly
+  against the exact page and reference that produced the false positive,
+  confirmed it now correctly rejects.
+- **`ParsedListing.location`, captured where the digest actually shows
+  one, instead of discarded.** `LinkedInDigestParser` and
+  `BuiltInDigestParser` were already parsing location text out of the
+  digest markup and throwing it away; `PostingReference` (this source's
+  confirm+extract input) had no location at all as a result, unlike
+  Adzuna's, which always has a real one. Now threaded through to
+  `digest_source.py`'s `PostingReference` construction, giving
+  confirm+extract one more thing to cross-check for future ambiguous
+  cases (wouldn't have caught the specific GM case above, since that
+  false positive was a role-level mismatch, not a location one).
+  `WellfoundDigestParser` deliberately left alone -- its location text
+  sits in a different position relative to title/company across its two
+  known templates (right after company in one, after a salary segment in
+  the other), and extracting it reliably would need more than the
+  deterministic marker-based approach that worked cleanly for the other
+  two.
+
 ---
 
 ## Sourcing strategy

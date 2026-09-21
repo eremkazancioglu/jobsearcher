@@ -129,7 +129,9 @@ async def process_listing(external_id: str, listing: ParsedListing) -> bool:
         query, listing.title, listing.platform, len(candidate_urls), len(walked), walked,
     )
 
-    reference = PostingReference(title=listing.title, company=listing.company)
+    reference = PostingReference(
+        title=listing.title, company=listing.company, location=listing.location
+    )
     result = await capture_from_search(reference, candidate_urls)
 
     if result is None:

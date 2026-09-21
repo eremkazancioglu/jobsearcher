@@ -46,12 +46,16 @@ class LinkedInDigestParser(DigestParser):
             if not company_p:
                 continue
 
-            company = company_p.get_text(strip=True).split("·")[0].strip()
+            company_location = company_p.get_text(strip=True).split("·", maxsplit=1)
+            company = company_location[0].strip()
+            location = company_location[1].strip() if len(company_location) > 1 else None
             if not company:
                 continue
 
             listings.append(
-                ParsedListing(title=title, company=company, platform=self.PLATFORM_NAME)
+                ParsedListing(
+                    title=title, company=company, platform=self.PLATFORM_NAME, location=location
+                )
             )
 
         return listings

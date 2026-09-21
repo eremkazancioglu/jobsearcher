@@ -19,6 +19,7 @@ class ParsedListing(BaseModel):
     title: str
     company: str
     platform: str  # logging only -- postings.source is unified 'email_digest'
+    location: str | None = None  # extra disambiguating signal for confirm+extract, when the digest shows one
 
 
 class DigestParser(ABC):

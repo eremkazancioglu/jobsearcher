@@ -197,6 +197,22 @@ class PageFetch:
     # True if Adzuna's own REMOTE badge was found in the raw HTML; None if
     # not found (not False -- absence isn't a "confirmed onsite" signal).
     remote_badge: Optional[bool]
+    # The page's real title -- the JobPosting JSON-LD node's own `title`
+    # field when present, falling back to the raw HTML <title> tag
+    # otherwise -- separate from the extracted body text. Confirmed
+    # necessary to source it this way, not just from the raw <title> tag
+    # alone: on a JS-shell page (Workday-hosted ones -- same case
+    # _extract_metadata_text() exists for), the client sets the real page
+    # title after hydration, so a plain fetch's <title> tag comes back
+    # empty even though the same JSON-LD block supplying the JD text also
+    # has the real role title in it. Passed to _confirm_and_extract() as
+    # an extra deterministic signal specifically because relying on
+    # title-string matching against body content that may not mention the
+    # title at all (trafilatura's extraction strips page headings as
+    # chrome, the same way it strips nav/footer) is what let a Staff IC
+    # role get wrongly confirmed against a "Manager" reference title on a
+    # real run -- see CLAUDE.md's Phase 4 section.
+    page_title: Optional[str] = None
 
 
 _total_cost_usd = 0.0
@@ -259,7 +275,46 @@ def _handle_claude_cli_stderr(line: str) -> None:
     logger.debug("claude CLI stderr: %s", line)
 
 
+# A candidate that's actually the right posting can otherwise be lost to a
+# single unexplained failure (message.is_error with no reason given, a
+# timeout, a dropped connection) with no way to distinguish it from a
+# genuine rejection -- confirmed in practice on a real run: the correct
+# candidate was the very first one walked, its confirm+extract call failed
+# outright with no error detail, and every remaining candidate was either
+# wrong or unfetchable, so the whole item got skipped for a reason that
+# had nothing to do with whether it was a match. One retry, not unbounded
+# -- this mirrors Adzuna's own retry-on-5xx in mcp_servers/job_sources/
+# server.py, same reasoning: a transient failure is worth one retry, but
+# repeating indefinitely would just burn budget against a real, persistent
+# problem (a hit max_budget_usd cap won't clear on retry either).
+CLAUDE_RETRY_ATTEMPTS = 2
+CLAUDE_RETRY_BACKOFF_S = 2.0
+
+
 async def _run_claude_json(
+    prompt: str,
+    schema: dict,
+    *,
+    allowed_tools: Optional[list[str]] = None,
+    permission_mode: Optional[str] = None,
+    max_turns: int = 1,
+    trace_name: str = "claude_agent_sdk_call",
+) -> Optional[dict]:
+    for attempt in range(1, CLAUDE_RETRY_ATTEMPTS + 1):
+        result = await _run_claude_json_once(
+            prompt, schema,
+            allowed_tools=allowed_tools, permission_mode=permission_mode,
+            max_turns=max_turns, trace_name=trace_name,
+        )
+        if result is not None:
+            return result
+        if attempt < CLAUDE_RETRY_ATTEMPTS:
+            logger.info("Retrying Claude call (attempt %d/%d)", attempt + 1, CLAUDE_RETRY_ATTEMPTS)
+            await asyncio.sleep(CLAUDE_RETRY_BACKOFF_S)
+    return None
+
+
+async def _run_claude_json_once(
     prompt: str,
     schema: dict,
     *,
@@ -454,6 +509,31 @@ def _extract_metadata_text(soup: BeautifulSoup) -> str:
     return "\n\n".join(parts)
 
 
+def _extract_metadata_title(soup: BeautifulSoup) -> Optional[str]:
+    """The JobPosting JSON-LD node's own `title` field, when present --
+    confirmed necessary, not redundant with the raw HTML <title> tag: on a
+    JS-shell page (Workday-hosted ones, same case _extract_metadata_text()
+    exists for), the client sets the real page title after hydration, so a
+    plain fetch's <title> tag comes back empty even though the same
+    JSON-LD block that supplies the JD text also has the real role title
+    sitting right in it. Checked first in _extract_text(); the raw <title>
+    tag is the fallback for pages that don't embed JobPosting data at all."""
+    for script in soup.find_all("script", attrs={"type": "application/ld+json"}):
+        if not script.string:
+            continue
+        try:
+            data = json.loads(script.string)
+        except (json.JSONDecodeError, TypeError):
+            continue
+        for node in _iter_jsonld_nodes(data):
+            if not _is_job_posting_node(node):
+                continue
+            title = node.get("title")
+            if title:
+                return str(title)
+    return None
+
+
 def _extract_visible_text(html: str, soup: BeautifulSoup) -> str:
     """Main-content extraction, not "everything that isn't script/style" --
     trafilatura drops nav/menus/cookie banners/footers/"related jobs"
@@ -495,34 +575,62 @@ def _extract_text(html: str) -> PageFetch:
     soup = BeautifulSoup(html, "html.parser")
     metadata_text = _extract_metadata_text(soup)
     remote_badge = _detect_remote_badge(soup)
+    # JobPosting JSON-LD's own title first -- the raw <title> tag comes
+    # back empty on JS-shell pages (confirmed: a real Workday posting had
+    # an empty <title> but a populated JSON-LD title field) -- see
+    # _extract_metadata_title()'s docstring.
+    page_title = _extract_metadata_title(soup) or (
+        soup.title.get_text(strip=True) if soup.title else None
+    )
     for tag in soup(["script", "style", "noscript"]):
         tag.decompose()
     visible_text = _extract_visible_text(html, soup)
     text = f"{metadata_text}\n\n{visible_text}" if metadata_text and visible_text else (metadata_text or visible_text)
-    return PageFetch(text=text, metadata_text=metadata_text, remote_badge=remote_badge)
+    return PageFetch(
+        text=text, metadata_text=metadata_text, remote_badge=remote_badge, page_title=page_title
+    )
 
 
 def _is_usable_length(text: Optional[str]) -> bool:
     return bool(text) and len(text) >= MIN_USABLE_CHARS
 
 
-async def _confirm_and_extract(text: str, reference: PostingReference) -> Optional[dict]:
+async def _confirm_and_extract(
+    text: str, reference: PostingReference, page_title: Optional[str] = None
+) -> Optional[dict]:
     """Judge and extract in a single call, not two -- both operate on the
     same page text, so this halves the LLM round-trips per candidate versus
     a separate confirm-then-extract pass. If the page turns out to be gated
     or the wrong posting, the model is told to leave the extraction fields
-    empty/false rather than guess."""
+    empty/false rather than guess.
+
+    page_title (the raw <title> HTML tag, separate from the extracted body
+    text) is passed as an extra deterministic signal -- confirmed necessary
+    in practice, not a nice-to-have: trafilatura's main-content extraction
+    strips page headings as chrome, so a JD's body text often never
+    restates the role title at all. Without this, a real run confirmed a
+    "Staff Software Engineer" page as a match for a "Manager" reference
+    title, since the body text never said either role name and the
+    reference had no location/snippet to cross-check against (a source
+    with only title+company, like agents/digest_source.py -- see
+    CLAUDE.md's Phase 4 section)."""
     prompt = (
         "Judge the page text below against this reference job posting, "
         "then extract from it if -- and only if -- it's a genuine match.\n\n"
         "First, judge whether the page is (a) actually showing content "
         "(not a login wall, paywall, or bot-block) and (b) describing the "
         "same specific job posting as the reference, not just a company's "
-        "careers page in general.\n\n"
+        "careers page in general. Treat the page's own <title> tag (given "
+        "below, separate from the page text) as a strong signal: if it "
+        "names a substantially different role or seniority level than the "
+        "reference title (e.g. \"Staff Engineer\" vs \"Manager\", "
+        "\"Senior\" vs \"Director\"), this is very likely not the same "
+        "posting even if the page's body content is topically similar.\n\n"
         f"Reference title: {reference.title}\n"
         f"Reference company: {reference.company}\n"
         f"Reference location: {reference.location or 'unknown'}\n"
         f"Reference description snippet: {reference.description or '(none)'}\n\n"
+        f"Page <title> tag: {page_title or '(none)'}\n\n"
         "If the page is gated or not the same posting, set full_description "
         "to an empty string, salary_found to false, and work_location to "
         "unknown -- don't extract anything from the wrong page. Otherwise, "
@@ -594,7 +702,7 @@ async def _web_search(query_text: str) -> list[str]:
 
 
 async def _try_confirmed_extraction(
-    text: Optional[str], reference: PostingReference
+    text: Optional[str], reference: PostingReference, page_title: Optional[str] = None
 ) -> Optional[dict]:
     """Confirm identity and extract in one call. Used for tier 3 candidates
     only -- external pages (search results or a company's careers site)
@@ -610,7 +718,7 @@ async def _try_confirmed_extraction(
             reference.title, len(text) if text else 0,
         )
         return None
-    result = await _confirm_and_extract(text, reference)
+    result = await _confirm_and_extract(text, reference, page_title)
     if result is None:
         logger.info("Confirm+extract call failed for %s", reference.title)
         return None
@@ -642,7 +750,9 @@ async def walk_candidates(
     for candidate_url in candidate_urls[:MAX_FALLBACK_CANDIDATES]:
         candidate_page = await _fetch_tiered(candidate_url)
         candidate_extraction = await _try_confirmed_extraction(
-            candidate_page.text if candidate_page else None, reference
+            candidate_page.text if candidate_page else None,
+            reference,
+            candidate_page.page_title if candidate_page else None,
         )
         if candidate_extraction is not None:
             return CandidateMatch(
