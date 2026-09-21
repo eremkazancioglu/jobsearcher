@@ -989,6 +989,356 @@ job-hunt-agents/
 
 ---
 
+## Phase 4: Secondary discovery via personal digest emails
+
+Added after Phase 1/2 were already built and validated -- not part of the
+original three-phase sequence, and not gated behind Phase 3 despite also
+needing Gmail. A second, independent discovery source alongside Adzuna,
+motivated by digest emails (LinkedIn, Wellfound, BuiltIn) the person already
+receives from having signed up for job alerts on those platforms.
+
+### Why this doesn't scrape LinkedIn, and isn't the same risk that ruled
+### LinkedIn out under "Sourcing strategy" below
+
+"Deliberately ruled out" (below) rejects LinkedIn specifically because
+there's no public read API and scraping it carries real legal risk. This
+is a different mechanism, not a workaround for that one: getting the
+`(title, company)` pair for every platform -- LinkedIn, Wellfound, BuiltIn
+-- never requests a page from any of their sites or calls any API of
+theirs. It reads email the person already legitimately receives in their
+own inbox (Gmail, read-only scope -- see Phase 3's "Gmail OAuth setup"
+above, pulled forward here rather than waited on, since this doesn't
+depend on anything else in Phase 3) and treats the job title + company
+named in that email as a plain fact, the same way Phase 1's fallback
+search already treats a title + company pulled from Adzuna as a plain
+fact to independently search on -- see "Keep this fetch/capture flow
+architecturally independent..." under Phase 1 above, which is the same
+principle applied to a second input source.
+
+What happens *after* that extraction differs per platform, and isn't
+governed by this same reasoning:
+- **linkedin.com** is excluded from the `JOB_BOARD_DOMAINS` search
+  allowlist (see below) and so is never a candidate a search result can
+  point at -- confirmed directly that fetching a LinkedIn job page hits
+  bot-detection blocking, the same access problem "Deliberately ruled
+  out" already names for LinkedIn generally.
+- **wellfound.com and builtin.com** *are* included in
+  `JOB_BOARD_DOMAINS` -- their own job pages are ordinary public pages a
+  tier 1/2 fetch can read like any other company or ATS site in this
+  project, confirmed directly (no bot-blocking, no login wall, full
+  description visible -- see the domain list below for what was
+  checked). No legal-risk concern equivalent to LinkedIn's was found for
+  either -- that concern was specifically about LinkedIn's own terms and
+  the Proxycurl precedent, not something that generalizes to every site a
+  digest email happens to come from.
+
+### What this builds
+
+1. **Digest email parsing** (`agents/digest_source.py` + `agents/digest_parsers/`)
+   -- reads the inbox (same Gmail read-only scope as Phase 3's tracker)
+   for LinkedIn/Wellfound/BuiltIn job-alert digest emails and extracts
+   `(title, company)` pairs from each. Each platform's digest has its own
+   HTML template -- this is a bounded, known-target parsing problem
+   (known senders, not arbitrary sites), same category as tier 1's Adzuna
+   JSON-LD extraction in Phase 1, not the "arbitrary site" case tier 3
+   exists for. Worth confirming in practice which approach (structural
+   HTML parsing vs. a cheap LLM extraction call per email) holds up
+   better across real digest emails before committing -- these templates
+   change without notice, which is the same reason tier 1's extraction
+   was kept deterministic-but-narrow rather than assumed stable forever.
+   - **Per-platform parsers, self-registering, so adding a fourth digest
+     source later doesn't touch `digest_source.py`.** Each platform is a
+     `DigestParser` subclass in its own file under `agents/digest_parsers/`
+     (`linkedin.py`, `wellfound.py`, `builtin.py`), declaring `PLATFORM_NAME`
+     and a `SENDER_QUERY` (Gmail search fragment) and implementing
+     `parse(email_html) -> list[ParsedListing]`. `DigestParser.__init_subclass__`
+     appends every subclass to a module-level registry the moment its
+     file is imported; `agents/digest_parsers/__init__.py` uses
+     `pkgutil.iter_modules` to import every module in that directory
+     automatically, so registration happens just from a file existing in
+     the folder -- `digest_source.py` calls `all_parsers()` and never
+     names a specific platform class. Adding a new digest source later is
+     "drop a new file in `agents/digest_parsers/`," not "edit the
+     orchestration logic to know about it" -- the extensibility this is
+     for.
+   - **Windowed to digests since the last run**, not the whole inbox --
+     same pattern as `send_digest.py`'s `_llm_error_line()`:
+     `fetch_last_agent_run("digest_source")` anchors a Gmail query's
+     `after:` date filter, falling back to a 24h lookback on the very
+     first run when there's no prior `agent_runs` row to anchor to (same
+     fallback `send_digest.py` uses for the same reason).
+   - **Combined and deduped across all three platforms before search or
+     capture, not processed per-platform.** All `(title, company)` pairs
+     from every digest email in the window are pooled together and
+     deduped by the same normalized hash used for `external_id` (see
+     below) *before* any Google CSE search or candidate walk runs -- the
+     same real posting frequently gets surfaced by more than one platform
+     on the same day, and deduping first avoids paying for the
+     search+confirm+extract pipeline twice for what's actually one
+     posting.
+2. **Search via `agents/digest_search.py`**, a domain-restricted raw
+   Anthropic SDK `web_search` call, one query per extracted
+   `(title, company)` pair, `"{title} {company}"`, returning up to 10
+   ranked candidate URLs.
+   - **Google's Custom Search JSON API was the original plan here and is
+     now abandoned -- confirmed dead, not a config problem.** Built out
+     in full first (a Programmable Search Engine, a `JOB_BOARD_DOMAINS`
+     allowlist worked around Google's 50-domain cap and public-suffix
+     wildcard restriction, an API key correctly scoped and billed) and
+     it never worked: every request failed with `403 "This project does
+     not have the access to Custom Search JSON API"`, reproduced
+     identically across two entirely separate from-scratch Google Cloud
+     projects, correctly configured both times (confirmed via the API's
+     own canonical status page showing "Enabled", not just the
+     restriction dropdown). Traced to a real, current Google policy, not
+     a mistake: Google closed Custom Search JSON API to new customers at
+     some point before this was built (existing customers keep access
+     until the API's discontinuation on January 1, 2027; new ones get
+     nothing, confirmed via Google's own developer/support forum
+     threads reporting the identical error). No project configuration
+     can fix this -- it's not fixable at all for a project that didn't
+     already have access.
+   - **The raw Anthropic SDK's `web_search` tool replaced it, and turned
+     out better, not just as-good.** `allowed_domains` on the
+     `web_search_20250305` tool definition does the same job Google's
+     domain-restricted engine was built for, confirmed directly against
+     current docs and a live call: a bare domain like `myworkdayjobs.com`
+     automatically covers every subdomain under it (confirmed live: a
+     real search matched `leidos.wd5.myworkdayjobs.com` from that one
+     bare entry) -- no `*.example.com` wildcard needed at all, and that
+     exact pattern is explicitly rejected by this tool if attempted. No
+     50-domain cap either. This is a second, deliberate raw-SDK
+     exception in this project, alongside `categorize.py`'s -- checked
+     directly, `claude_agent_sdk`'s `ClaudeAgentOptions` (what
+     `fetchers.py`'s tier 3 `_web_search()` uses for Adzuna) has no
+     `allowed_domains`/`blocked_domains` field at all; that field only
+     exists on the raw Messages API's tool definition. Own cost/error
+     counters, tracked separately from `fetchers.py`'s (different Claude
+     client), same reasoning as `categorize.py`'s independent counter --
+     `digest_source.py` sums both when reporting a run's total.
+   - **Real coverage gap, not a bug to fix later.** A company with a
+     fully custom-built, self-hosted careers page on its own domain
+     still won't surface, since `JOB_BOARD_DOMAINS` is still a curated
+     allowlist, not whole-web search (unrestricted search was ruled out
+     for this source from the start, independent of which provider ended
+     up implementing the restriction -- see "wellfound.com and
+     builtin.com are included" below for why the three digest platforms
+     themselves are handled by allowlist inclusion/exclusion rather than
+     turning off restriction entirely). Graceful degrade (skip, don't
+     block the run) covers this the same way it covers tier 3 finding
+     nothing -- confirmed live on real digest data that this is a normal
+     outcome, not a crash: one real candidate walk correctly rejected a
+     generic company careers-landing page before matching the right one.
+   - **`JOB_BOARD_DOMAINS`** (in `agents/digest_search.py`) -- bare
+     hostnames, not `*.example.com` wildcards (subdomains are automatic,
+     see above), kept as the single source of truth for what's actually
+     configured, the same "kept in sync deliberately" reasoning as
+     Phase 1's three-places CLI-default list:
+     ```
+     greenhouse.io       dayforcehcm.com     freshteam.com
+     lever.co            trakstar.com        homerun.co
+     ashbyhq.com         hiringthing.com     dice.com
+     myworkdayjobs.com   jobscore.com        workatastartup.com
+     smartrecruiters.com avature.net         otta.com
+     icims.com           eightfold.ai        himalayas.app
+     workable.com        oraclecloud.com     remoteok.com
+     jobvite.com         csod.com            remotive.com
+     taleo.net           ultipro.com         weworkremotely.com
+     successfactors.com  phenompeople.com    welcometothejungle.com
+     adp.com             paylocity.com       wellfound.com
+     applytojob.com      zohorecruit.com     builtin.com
+     jazzhr.com          paycomonline.net  (lower confidence --
+     breezy.hr           bullhornstaffing.com  exact hostname not
+     recruitee.com       clearcompany.com      verified against a
+     comeet.co           jobadder.com          real posting yet)
+     teamtailor.com
+     personio.com
+     personio.de
+     bamboohr.com
+     ```
+     **`wellfound.com` and `builtin.com` are included, `linkedin.com` is
+     not -- a real distinction, not a blanket "exclude digest sources"
+     rule.** The original instinct was to exclude all three digest
+     platforms from the search allowlist, the same way LinkedIn's own
+     results are excluded. That instinct was right for LinkedIn only:
+     confirmed directly (fetching a LinkedIn job page hits bot-detection
+     blocking), so it stays excluded -- a candidate URL there would just
+     fail the fetch. BuiltIn and Wellfound were checked the same way and
+     came back clean: a real BuiltIn posting
+     (`builtin.com/job/data-scientist-remote/9477437`, Optum) loaded with
+     full description, requirements, and salary visible, no login wall;
+     Wellfound's listing pages showed the same (a specific old posting
+     returned a clean `410 Gone` -- a legitimately closed listing, not a
+     block). Both are platforms companies post to directly, the same
+     relationship as Greenhouse or Lever, not just re-aggregators -- so a
+     Wellfound/BuiltIn page surfacing as the top candidate for an item
+     that came from that platform's own digest isn't a wasted, circular
+     result, it's often the single most accurate one available, since
+     it's literally where the title+company was read from. The four
+     marked lower-confidence were named from general knowledge of each
+     platform, not confirmed against a live posting the way every other
+     sourcing claim in this document is -- verify (or drop) them once
+     real search volume is flowing.
+3. **Candidate walk, reused as-is from tier 3** -- the 10 ranked
+   candidates are walked in order through the *same* tiered fetch
+   (`fetchers.py`'s tier 1 plain fetch, escalating to tier 2's headless
+   render) and the *same* confirm+extract LLM call already built for
+   Adzuna's tier 3, stopping at the first candidate that passes. No
+   separate confirmation logic for this source -- confirm+extract's
+   existing job is exactly "is this really a posting for this title at
+   this company," which is exactly what's needed here too, just fed a
+   different candidate list. If none of the 10 pass, this degrades the
+   same way tier 3 degrading does -- skip, don't block the run. (Cost
+   consequence, not a reason not to build this: unlike Adzuna postings,
+   which often resolve via tier 1/2's free JSON-LD shortcut, *every* item
+   from this source pays for a confirm+extract LLM call, since there's no
+   equivalent single-known-source shortcut here -- there's no page this
+   source's own platform serves directly by ID the way Adzuna's
+   `/details/{id}` does.)
+4. **Write to `postings`** -- same row shape as any tier 3 capture
+   (`description_source = 'company_site'`, full salary/work_location
+   handling unchanged).
+   - **`source = 'email_digest'`, one shared value, not one per
+     platform.** Since items are combined and deduped across LinkedIn/
+     Wellfound/BuiltIn *before* any row is written (see above), a single
+     surviving row often can't be attributed to one specific platform in
+     the first place -- the same posting regularly shows up in more than
+     one platform's digest on the same day. Tagging it with whichever
+     platform happened to be seen first would be arbitrary, so one shared
+     `source` value is the more correct choice here, not just the
+     simpler one -- unlike Adzuna, where "how many came from where"
+     doesn't apply because there's only ever one platform per row.
+   - **`external_id`** is `sha256` of the normalized `(title, company)`
+     pair (lowercased, whitespace-collapsed, punctuation-stripped) --
+     this is also the key used for the cross-platform dedup above, so
+     the same normalization has to be shared between that step and the
+     final write, not reimplemented separately. Known, accepted
+     imperfection: the same role re-sent with meaningfully reformatted
+     title text (not just casing/spacing) normalizes to a different hash
+     and is treated as new -- worth watching in practice, not worth a
+     fuzzy-match fix up front.
+   - **Known cross-source duplicate, not a bug to fix now.** A posting
+     Adzuna's own search already found and one this source independently
+     finds are different `source` values (`adzuna` vs. `email_digest`),
+     so `(source, external_id)` uniqueness doesn't catch the overlap --
+     the same real job can legitimately appear as two separate rows. No
+     cross-source reconciliation is planned; this is the same kind of
+     accepted gap as the coverage gap above, worth revisiting only if it
+     turns out to happen often enough to matter once real data is
+     flowing.
+
+### What to gather
+
+**Gmail OAuth** (shared with Phase 3's tracker -- doing this now means
+Phase 3, whenever it's picked up, doesn't need to repeat this setup):
+- A Google Cloud project with the Gmail API enabled.
+- An OAuth consent screen configured for personal/single-user use.
+- An OAuth client ID (Desktop app / installed-app type), downloaded as a
+  credentials JSON file, used once by `scripts/gmail_oauth_setup.py` to
+  produce `personal/gmail_token.json` (gitignored, same as the resume/
+  preferences documents) -- that token file is what `agents/gmail_client.py`
+  actually reads at runtime, not the credentials file itself.
+- Scope: `gmail.readonly` only, same as Phase 3.
+- The one-time interactive consent flow still has to be run locally once
+  to produce that refresh token -- not automatable away, same note as
+  Phase 3's "Gmail OAuth setup is a one-time interactive step" above.
+
+**Publishing status must be "In production," not "Testing," before this
+runs on a schedule -- confirmed necessary, not a nice-to-have.** A refresh
+token issued while the consent screen is in Testing status expires after
+exactly 7 days, regardless of use -- confirmed against Google's own OAuth
+docs and, separately, by this project's own CI schedule running every 12
+hours, which would have silently started failing within a week on a
+Testing-issued token. Publishing to production removes that limit. This
+does *not* require Google's formal app-verification review, despite the
+Console prompting for it: Google documents a personal-use exception --
+"if you are the only user of your app... you [don't need] formal
+verification" -- confirmed in practice here, since the Publish App action
+succeeded and showed a live "Back to testing" toggle, meaning it actually
+took effect, not just a dismissed warning. Two prerequisites the Console
+enforces before Publish is even clickable, worth knowing in advance:
+- The Branding tab requires a homepage link and a privacy policy link to
+  be filled in before publishing is available -- for a personal,
+  single-user tool with no public site, a public GitHub Gist containing a
+  couple of sentences ("personal tool, reads my own Gmail via read-only
+  access, data isn't shared with any third party") satisfies the privacy
+  policy field; the repo's own URL (even if the repo is private) is fine
+  for the homepage field, since it isn't actively validated for an
+  unverified personal app.
+- **The token has to be regenerated after publishing, not just the
+  consent screen re-saved** -- a token already issued under Testing keeps
+  its original 7-day expiry regardless of a later status change.
+  `scripts/gmail_oauth_setup.py` has to be re-run once, post-publish, to
+  get a token actually issued under production status.
+- Expect the "Google hasn't verified this app" click-through screen
+  (Advanced -> Go to \[app\] (unsafe)) to still appear during that
+  re-run -- unrelated to whether this worked; that warning is generic
+  boilerplate for any unverified app requesting a sensitive scope,
+  regardless of Testing vs. production status, not a sign verification
+  is actually required here.
+
+Nothing else needs gathering for the search step -- `agents/digest_search.py`
+uses the same `ANTHROPIC_API_KEY` already required from Phase 1, since it's
+a raw Anthropic SDK call, not a separate provider. (Google Custom Search
+JSON API was the original plan and required its own API key + Programmable
+Search Engine setup; both are moot now that it's confirmed dead for new
+customers -- see above.)
+
+### Suggested files
+
+```
+job-hunt-agents/
+├── scripts/
+│   └── gmail_oauth_setup.py      # one-time interactive Gmail OAuth flow
+└── agents/
+    ├── digest_source.py          # orchestration: pull parsers -> fetch emails
+    │                              # -> pool+dedupe -> digest_search.search()
+    │                              # -> reuses fetchers.py's candidate walk
+    ├── digest_search.py          # raw Anthropic SDK web_search, allowed_domains
+    │                              # restricted to JOB_BOARD_DOMAINS
+    ├── gmail_client.py           # shared Gmail read access (also used by
+    │                              # Phase 3's tracker, once that's built)
+    └── digest_parsers/
+        ├── __init__.py           # pkgutil auto-import -> triggers registration
+        ├── base.py               # DigestParser ABC + self-registering subclass hook
+        ├── linkedin.py           # DigestParser subclass, PLATFORM_NAME="linkedin"
+        ├── wellfound.py          # DigestParser subclass, PLATFORM_NAME="wellfound"
+        └── builtin.py            # DigestParser subclass, PLATFORM_NAME="builtin"
+```
+
+A future fourth platform is a new file dropped into `digest_parsers/` --
+`digest_source.py` calls `all_parsers()` and never imports a specific
+platform class by name, so nothing else in this list needs to change to
+pick it up.
+
+`fetchers.py`'s tier 3 candidate walk was factored out into its own
+callable, `walk_candidates()`, specifically so it could be shared here
+without duplication -- both `capture()`'s tier 3 (Adzuna, candidates from
+`_web_search()`) and `capture_from_search()` (this source, candidates
+from `digest_search.search()`) call the same function. `PostingReference`
+(a small dataclass of title/company/location/description) is what made
+this sharable: `_confirm_and_extract()` and `_try_confirmed_extraction()`
+were generalized from taking an `AdzunaResult` directly to taking a
+`PostingReference`, so a source with no Adzuna snippet or location (like
+this one) can still use the exact same confirm+extract call.
+
+### Deployment
+
+Wired into the same scheduled pipeline Phase 2 already runs, not a
+separate cron job -- `scripts/run_pipeline.py`'s stage list is
+`discovery -> digest_source -> categorize -> digest`. `digest_source`
+runs right after `discovery`, before `categorize`, since both produce new
+raw postings (`match_category` left null); this mirrors where Phase 3's
+`tracker.py` is planned to go once built (after `categorize`, since it
+operates on already-applied-to postings, not new ones -- see Phase 3).
+`.github/workflows/agents.yml`'s "Restore personal documents" step
+additionally decodes `GMAIL_TOKEN_B64` into `personal/gmail_token.json`
+(see "Environment variables / secrets" below for the full secret and why
+it specifically has to come from a production-published token, not a
+Testing-issued one).
+
+---
+
 ## Sourcing strategy
 
 **Discovery: Adzuna Search API**
@@ -1339,26 +1689,50 @@ SLACK_WEBHOOK_URL=                 # send_digest.py falls back to stdout if unse
 
 # Added in Phase 3
 GMAIL_CREDENTIALS_JSON=            # read-only Gmail scope only
+
+# Added in Phase 4 (Gmail scope shared with Phase 3, set up ahead of it --
+# GMAIL_TOKEN_PATH defaults to personal/gmail_token.json if unset, so this
+# line is only needed to point somewhere else)
+GMAIL_TOKEN_PATH=personal/gmail_token.json
 ```
+
+No separate search-provider credentials needed for Phase 4 -- `agents/
+digest_search.py` reuses `ANTHROPIC_API_KEY` from Phase 1 (a raw Anthropic
+SDK call, not a new provider). `GOOGLE_CSE_API_KEY`/`GOOGLE_CSE_CX` were
+part of an earlier version of this plan (Google Custom Search JSON API)
+that turned out to be closed to new customers -- see Phase 4's "What this
+builds" for the full story; nothing in this codebase reads those two
+variables anymore.
 
 GitHub Actions (Phase 2, `.github/workflows/agents.yml`) needs the same
 set as repository secrets, plus `permissions: contents: write` to commit
-STATUS.json, plus two CI-only secrets not in the `.env` list above:
-**`RESUME_B64`** and **`PREFERENCES_B64`** -- base64 of the resume/
-preferences markdown files. `personal/` is gitignored (personal data), so
-CI can't just check it out the way it can everything else; the workflow's
-"Restore personal documents" step decodes these secrets into
-`personal/resume.md`/`personal/preferences.md` before the pipeline runs.
-Base64, not the raw file content, specifically so multiline markdown
-survives GitHub's secrets round-trip cleanly (a raw multiline secret value
-pasted into the GitHub UI is more failure-prone across newline handling
-than a single base64 line -- generate with e.g. `base64 -i
-personal/resume.md | pbcopy` locally, paste into the secret). `RESUME_PATH`/
-`PREFERENCES_PATH` are set directly as job-level `env:` in the workflow
-(`personal/resume.md`/`personal/preferences.md`), not read from a
-committed `.env` -- there is no `.env` file in CI at all; every other
-secret above is also passed the same way, via job-level `env:` referencing
-`secrets.*`, not written to a file first.
+STATUS.json, plus three CI-only secrets not in the `.env` list above:
+**`RESUME_B64`**, **`PREFERENCES_B64`**, and **`GMAIL_TOKEN_B64`** -- base64
+of the resume/preferences markdown files and `personal/gmail_token.json`
+respectively. `personal/` is gitignored (personal data), so CI can't just
+check it out the way it can everything else; the workflow's "Restore
+personal documents" step decodes all three secrets into
+`personal/resume.md`/`personal/preferences.md`/`personal/gmail_token.json`
+before the pipeline runs. Base64, not the raw file content, specifically
+so multiline content survives GitHub's secrets round-trip cleanly (a raw
+multiline secret value pasted into the GitHub UI is more failure-prone
+across newline handling than a single base64 line -- generate with e.g.
+`base64 -i personal/resume.md | pbcopy` locally, paste into the secret).
+`RESUME_PATH`/`PREFERENCES_PATH`/`GMAIL_TOKEN_PATH` are set directly as
+job-level `env:` in the workflow, not read from a committed `.env` --
+there is no `.env` file in CI at all; every other secret above is also
+passed the same way, via job-level `env:` referencing `secrets.*`, not
+written to a file first.
+
+**`GMAIL_TOKEN_B64` specifically has to come from a token issued while
+the OAuth consent screen is published (production), not Testing** -- see
+Phase 4's "Publishing status must be 'In production'" above. A
+Testing-issued token would work fine locally for a while and then start
+failing in CI within about a week (the 7-day expiry), silently, since a
+failed `digest_source` stage doesn't fail the whole pipeline run (see
+`scripts/run_pipeline.py`'s per-stage failure handling) -- worth watching
+`agent_runs`/`STATUS.json` for the `digest_source` entry specifically if
+this stage ever stops producing new postings.
 
 **`scripts/run_pipeline.py`'s search params are surfaced as
 `workflow_dispatch.inputs`** (`what`, `where`, `max_days_old`,

@@ -1,5 +1,11 @@
-"""Single entrypoint chaining the three Phase 2 stages in order:
-discovery -> categorize -> digest.
+"""Single entrypoint chaining the pipeline stages in order:
+discovery -> digest_source -> categorize -> digest.
+
+digest_source (Phase 4) runs right after discovery, before categorize --
+both discovery and digest_source produce new raw postings (match_category
+left null), so digest_source belongs alongside discovery in the sequence,
+not after categorize the way Phase 3's tracker.py will once that's built
+(discovery -> digest_source -> categorize -> tracker -> digest).
 
     uv run scripts/run_pipeline.py
 
@@ -81,6 +87,7 @@ async def main() -> None:
     args = parse_args()
     stages = [
         ("discovery", _discovery_cmd(args)),
+        ("digest_source", ["uv", "run", "agents/digest_source.py"]),
         ("categorize", ["uv", "run", "agents/categorize.py"]),
         ("digest", ["uv", "run", "digest/send_digest.py"]),
     ]

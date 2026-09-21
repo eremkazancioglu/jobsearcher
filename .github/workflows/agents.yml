@@ -63,6 +63,12 @@ jobs:
       DATABASE_URL: ${{ secrets.DATABASE_URL }}
       RESUME_PATH: personal/resume.md
       PREFERENCES_PATH: personal/preferences.md
+      # agents/digest_source.py (Phase 4) -- Gmail read-only token restored
+      # from a secret below, same "personal/ is gitignored, reconstruct it
+      # from a repo secret" pattern as RESUME_B64/PREFERENCES_B64. No
+      # separate search-provider secret needed -- digest_search.py reuses
+      # ANTHROPIC_API_KEY above.
+      GMAIL_TOKEN_PATH: personal/gmail_token.json
       SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
       LANGFUSE_PUBLIC_KEY: ${{ secrets.LANGFUSE_PUBLIC_KEY }}
       LANGFUSE_SECRET_KEY: ${{ secrets.LANGFUSE_SECRET_KEY }}
@@ -108,6 +114,7 @@ jobs:
           mkdir -p personal
           echo "${{ secrets.RESUME_B64 }}" | base64 -d > "$RESUME_PATH"
           echo "${{ secrets.PREFERENCES_B64 }}" | base64 -d > "$PREFERENCES_PATH"
+          echo "${{ secrets.GMAIL_TOKEN_B64 }}" | base64 -d > "$GMAIL_TOKEN_PATH"
 
       - name: Run pipeline
         run: >

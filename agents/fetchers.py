@@ -169,6 +169,25 @@ class CaptureResult:
 
 
 @dataclass
+class PostingReference:
+    """The plain facts _confirm_and_extract() judges a candidate page
+    against -- factored out of AdzunaResult so tier 3's candidate walk can
+    be shared with sources that aren't Adzuna (e.g. agents/digest_source.py,
+    which only ever has title/company, no snippet or location)."""
+    title: str
+    company: str
+    location: Optional[str] = None
+    description: Optional[str] = None
+
+
+@dataclass
+class CandidateMatch:
+    url: str
+    extraction: dict
+    remote_badge: Optional[bool]
+
+
+@dataclass
 class PageFetch:
     text: str
     # The JobPosting JSON-LD description alone, unmerged with visible text
@@ -487,7 +506,7 @@ def _is_usable_length(text: Optional[str]) -> bool:
     return bool(text) and len(text) >= MIN_USABLE_CHARS
 
 
-async def _confirm_and_extract(text: str, adzuna: AdzunaResult) -> Optional[dict]:
+async def _confirm_and_extract(text: str, reference: PostingReference) -> Optional[dict]:
     """Judge and extract in a single call, not two -- both operate on the
     same page text, so this halves the LLM round-trips per candidate versus
     a separate confirm-then-extract pass. If the page turns out to be gated
@@ -500,10 +519,10 @@ async def _confirm_and_extract(text: str, adzuna: AdzunaResult) -> Optional[dict
         "(not a login wall, paywall, or bot-block) and (b) describing the "
         "same specific job posting as the reference, not just a company's "
         "careers page in general.\n\n"
-        f"Reference title: {adzuna.title}\n"
-        f"Reference company: {adzuna.company}\n"
-        f"Reference location: {adzuna.location or 'unknown'}\n"
-        f"Reference description snippet: {adzuna.description or '(none)'}\n\n"
+        f"Reference title: {reference.title}\n"
+        f"Reference company: {reference.company}\n"
+        f"Reference location: {reference.location or 'unknown'}\n"
+        f"Reference description snippet: {reference.description or '(none)'}\n\n"
         "If the page is gated or not the same posting, set full_description "
         "to an empty string, salary_found to false, and work_location to "
         "unknown -- don't extract anything from the wrong page. Otherwise, "
@@ -574,7 +593,9 @@ async def _web_search(query_text: str) -> list[str]:
     return [url for url in result.get("urls", []) if isinstance(url, str)]
 
 
-async def _try_confirmed_extraction(text: Optional[str], adzuna: AdzunaResult) -> Optional[dict]:
+async def _try_confirmed_extraction(
+    text: Optional[str], reference: PostingReference
+) -> Optional[dict]:
     """Confirm identity and extract in one call. Used for tier 3 candidates
     only -- external pages (search results or a company's careers site)
     whose identity is genuinely uncertain, unlike tier 1/2's primary URL,
@@ -586,27 +607,69 @@ async def _try_confirmed_extraction(text: Optional[str], adzuna: AdzunaResult) -
     if not _is_usable_length(text):
         logger.info(
             "Skipping confirm+extract for %s -- text too short/missing (%d chars)",
-            adzuna.title, len(text) if text else 0,
+            reference.title, len(text) if text else 0,
         )
         return None
-    result = await _confirm_and_extract(text, adzuna)
+    result = await _confirm_and_extract(text, reference)
     if result is None:
-        logger.info("Confirm+extract call failed for %s", adzuna.title)
+        logger.info("Confirm+extract call failed for %s", reference.title)
         return None
     if result["gated"]:
         logger.info(
             "Confirm+extract rejected candidate for %s: judged gated (%s)",
-            adzuna.title, result.get("reason"),
+            reference.title, result.get("reason"),
         )
         return None
     if not result["same_posting"]:
         logger.info(
             "Confirm+extract rejected candidate for %s: not judged the same posting (%s)",
-            adzuna.title, result.get("reason"),
+            reference.title, result.get("reason"),
         )
         return None
-    logger.info("Confirm+extract passed for %s", adzuna.title)
+    logger.info("Confirm+extract passed for %s", reference.title)
     return result
+
+
+async def walk_candidates(
+    candidate_urls: list[str], reference: PostingReference
+) -> Optional[CandidateMatch]:
+    """Fetch each candidate URL in order through the tiered fetch, running
+    confirm+extract on each, stopping at the first that passes. Shared by
+    capture()'s tier 3 (Adzuna's own WebSearch-sourced candidates) and
+    agents/digest_source.py (Google CSE-sourced candidates) -- same walk,
+    different origin for the candidate list. Caller is responsible for
+    capping candidate_urls to MAX_FALLBACK_CANDIDATES before calling."""
+    for candidate_url in candidate_urls[:MAX_FALLBACK_CANDIDATES]:
+        candidate_page = await _fetch_tiered(candidate_url)
+        candidate_extraction = await _try_confirmed_extraction(
+            candidate_page.text if candidate_page else None, reference
+        )
+        if candidate_extraction is not None:
+            return CandidateMatch(
+                url=candidate_url,
+                extraction=candidate_extraction,
+                remote_badge=candidate_page.remote_badge if candidate_page else None,
+            )
+    return None
+
+
+def _parse_salary_from_extraction(
+    extraction: dict, title: str
+) -> tuple[Optional[Decimal], Optional[Decimal], Optional[bool]]:
+    """Shared by capture() and capture_from_search() -- extraction's
+    salary_found/salary_min/salary_max fields only ever come from tier 3's
+    confirm+extract call, never tier 1/2 (see "Salary detection is tier
+    3-only" in CLAUDE.md), so this is the same parsing either way."""
+    if not extraction.get("salary_found"):
+        return None, None, None
+    try:
+        salary_min = Decimal(str(extraction["salary_min"]))
+        salary_max_value = extraction["salary_max"]
+        salary_max = Decimal(str(salary_max_value)) if salary_max_value is not None else salary_min
+        return salary_min, salary_max, False
+    except (TypeError, ArithmeticError):
+        logger.warning("Malformed salary in extraction for %s; ignoring", title)
+        return None, None, None
 
 
 @observe(name="capture_posting")
@@ -657,6 +720,11 @@ async def capture(adzuna: AdzunaResult) -> CaptureResult:
     except Exception:
         logger.exception("Tier 1/2 capture failed for %s", normalized_url)
 
+    reference = PostingReference(
+        title=adzuna.title, company=adzuna.company, location=adzuna.location,
+        description=adzuna.description,
+    )
+
     if extraction is None:
         try:
             search_query = f"{adzuna.title} {adzuna.company}"
@@ -673,18 +741,13 @@ async def capture(adzuna: AdzunaResult) -> CaptureResult:
                     len(candidate_urls) - MAX_FALLBACK_CANDIDATES,
                     candidate_urls[MAX_FALLBACK_CANDIDATES:],
                 )
-            for candidate_url in walked_urls:
-                candidate_page = await _fetch_tiered(candidate_url)
-                candidate_extraction = await _try_confirmed_extraction(
-                    candidate_page.text if candidate_page else None, adzuna
-                )
-                if candidate_extraction is not None:
-                    extraction = candidate_extraction
-                    description_source = "company_site"
-                    url = candidate_url
-                    remote_badge = candidate_page.remote_badge if candidate_page else None
-                    logger.info("Tier 3: candidate %s confirmed for %s", candidate_url, adzuna.title)
-                    break
+            match = await walk_candidates(candidate_urls, reference)
+            if match is not None:
+                extraction = match.extraction
+                description_source = "company_site"
+                url = match.url
+                remote_badge = match.remote_badge
+                logger.info("Tier 3: candidate %s confirmed for %s", match.url, adzuna.title)
             else:
                 logger.info("Tier 3: no candidate confirmed for %s", adzuna.title)
         except Exception:
@@ -693,21 +756,13 @@ async def capture(adzuna: AdzunaResult) -> CaptureResult:
     # Salary detection only runs for tier 3 (_confirm_and_extract) -- tier
     # 1/2's deterministic extraction dict has no salary_* keys at all,
     # since that page IS Adzuna's own data source, not an independent one
-    # to check against Adzuna's salary fields. .get() (not bracket access)
-    # is deliberate here so a tier 1/2 result falls straight through to
-    # Adzuna's own salary_min/salary_max/salary_is_predicted.
-    salary_min, salary_max, salary_is_predicted = None, None, None
-    if extraction is not None and extraction.get("salary_found"):
-        try:
-            salary_min = Decimal(str(extraction["salary_min"]))
-            salary_max_value = extraction["salary_max"]
-            salary_max = (
-                Decimal(str(salary_max_value)) if salary_max_value is not None else salary_min
-            )
-            salary_is_predicted = False
-        except (TypeError, ArithmeticError):
-            logger.warning("Malformed salary in extraction for %s; falling back to Adzuna's", adzuna.title)
-            salary_min = salary_max = salary_is_predicted = None
+    # to check against Adzuna's salary fields. Falling through to None
+    # here (rather than raising) is deliberate so a tier 1/2 result falls
+    # straight through to Adzuna's own salary_min/salary_max/salary_is_predicted.
+    salary_min, salary_max, salary_is_predicted = (
+        _parse_salary_from_extraction(extraction, adzuna.title) if extraction is not None
+        else (None, None, None)
+    )
     if salary_min is None:
         salary_min = adzuna.salary_min
         salary_max = adzuna.salary_max
@@ -738,6 +793,45 @@ async def capture(adzuna: AdzunaResult) -> CaptureResult:
         description=description,
         description_source=description_source,
         url=url,
+        salary_min=salary_min,
+        salary_max=salary_max,
+        salary_is_predicted=salary_is_predicted,
+        work_location=work_location,
+    )
+
+
+async def capture_from_search(
+    reference: PostingReference, candidate_urls: list[str]
+) -> Optional[CaptureResult]:
+    """Tier-3-only capture for sources with no redirect_url and no Adzuna
+    snippet/salary/remote-badge fallback -- agents/digest_source.py's use
+    case. candidate_urls comes from the caller's own search (Google CSE,
+    restricted to JOB_BOARD_DOMAINS -- see CLAUDE.md's Phase 4 section),
+    not _web_search(). Reuses walk_candidates() and
+    _parse_salary_from_extraction(), same as capture()'s tier 3 path.
+
+    Returns None if no candidate confirms -- unlike capture(), there's no
+    snippet to degrade to here, so callers should skip the item entirely
+    rather than write a row (see CLAUDE.md: "this degrades the same way
+    tier 3 degrading does -- skip, don't block the run")."""
+    match = await walk_candidates(candidate_urls, reference)
+    if match is None:
+        return None
+
+    extraction = match.extraction
+    salary_min, salary_max, salary_is_predicted = _parse_salary_from_extraction(
+        extraction, reference.title
+    )
+
+    if match.remote_badge:
+        work_location = "remote"
+    else:
+        work_location = _normalize_work_location(extraction.get("work_location"))
+
+    return CaptureResult(
+        description=extraction["full_description"],
+        description_source="company_site",
+        url=match.url,
         salary_min=salary_min,
         salary_max=salary_max,
         salary_is_predicted=salary_is_predicted,
