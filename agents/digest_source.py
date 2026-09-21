@@ -18,8 +18,10 @@ nothing here needs to change.
 import asyncio
 import logging
 import sys
+from collections import Counter, defaultdict
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from typing import Literal
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
@@ -102,9 +104,15 @@ def dedupe_listings(listings: list[ParsedListing]) -> dict[str, ParsedListing]:
     """Keyed by normalized_listing_id -- the same hash used as
     postings.external_id, so this dedup and the DB's own uniqueness
     constraint agree on what "the same listing" means. First occurrence
-    wins; which platform it came from is not preserved (see CLAUDE.md:
-    source is unified 'email_digest', not per-platform, precisely because
-    a surviving row often can't be attributed to one specific platform)."""
+    wins; postings.source stays unified 'email_digest' rather than
+    per-platform regardless of which one won (see CLAUDE.md), since the
+    same listing regularly appears in more than one platform's digest and
+    attributing the DB row to just the first one would be arbitrary. The
+    winning listing's .platform *is* still carried forward on the
+    ParsedListing object itself, though -- used for logging and the
+    end-of-run summary in main() -- it just reflects only the first
+    platform that produced this listing, not every platform it appeared
+    in."""
     deduped: dict[str, ParsedListing] = {}
     for listing in listings:
         key = normalized_listing_id(listing.title, listing.company)
@@ -112,14 +120,19 @@ def dedupe_listings(listings: list[ParsedListing]) -> dict[str, ParsedListing]:
     return deduped
 
 
-async def process_listing(external_id: str, listing: ParsedListing) -> bool:
-    """Returns True if a new posting was captured and written, False if
-    skipped (already-seen, or no candidate confirmed -- see
-    capture_from_search()'s docstring for why a miss here means skip
-    entirely rather than write a degraded row)."""
+ListingOutcome = Literal["written", "already_seen", "no_match"]
+
+
+async def process_listing(external_id: str, listing: ParsedListing) -> ListingOutcome:
+    """Returns "written" if a new posting was captured and written,
+    "already_seen" if skipped as a repeat, or "no_match" if search+capture
+    found nothing confirmable (see capture_from_search()'s docstring for
+    why a miss here means skip entirely rather than write a degraded row).
+    Used both for run.record() bookkeeping and the end-of-run per-platform
+    summary in main()."""
     if posting_exists(SOURCE, external_id):
         logger.info("Skipping already-seen listing %s (%s)", external_id, listing.title)
-        return False
+        return "already_seen"
 
     query = f"{listing.title} {listing.company}"
     candidate_urls = await digest_search.search(query)
@@ -136,7 +149,7 @@ async def process_listing(external_id: str, listing: ParsedListing) -> bool:
 
     if result is None:
         logger.info("No candidate confirmed for %s at %s -- skipping", listing.title, listing.company)
-        return False
+        return "no_match"
 
     posting = Posting(
         source=SOURCE,
@@ -157,11 +170,38 @@ async def process_listing(external_id: str, listing: ParsedListing) -> bool:
         external_id, result.description_source, result.work_location,
     )
     logger.info("Running total Claude API cost so far: $%.4f", _total_cost_usd())
-    return True
+    return "written"
+
+
+def _log_summary(counts: dict[str, Counter]) -> None:
+    """Per-platform breakdown of how every listing in this run's dedup set
+    resolved -- written, already-seen (not a failure, just a repeat), no
+    match found, or errored outright. Logged as the last thing this agent
+    does, so it's easy to find at the end of this stage's GitHub Actions
+    log without needing a separate step or a way to pass data between
+    run_pipeline.py's subprocess stages (each stage runs as its own
+    process, so a truly separate step would have to re-query the DB
+    rather than reuse these in-memory counts)."""
+    logger.info("=== Digest source summary ===")
+    total = Counter()
+    for platform in sorted(counts):
+        c = counts[platform]
+        total.update(c)
+        this_total = sum(c.values())
+        logger.info(
+            "%s: %d written, %d already seen, %d no match, %d error(s) (%d total)",
+            platform, c["written"], c["already_seen"], c["no_match"], c["error"], this_total,
+        )
+    grand_total = sum(total.values())
+    logger.info(
+        "TOTAL: %d written, %d already seen, %d no match, %d error(s) (%d total)",
+        total["written"], total["already_seen"], total["no_match"], total["error"], grand_total,
+    )
 
 
 async def main() -> None:
     since = _since_last_run()
+    counts: dict[str, Counter] = defaultdict(Counter)
 
     async with AgentRunTracker(AGENT_NAME) as run:
         listings = collect_listings(since)
@@ -173,14 +213,17 @@ async def main() -> None:
 
         for external_id, listing in deduped.items():
             try:
-                written = await process_listing(external_id, listing)
-                if written:
+                outcome = await process_listing(external_id, listing)
+                counts[listing.platform][outcome] += 1
+                if outcome == "written":
                     run.record(is_new=True)
             except Exception as e:
                 logger.exception("Failed to process listing %s -- skipping", listing.title)
                 run.record_error(f"{external_id} ({listing.title}): {e}")
+                counts[listing.platform]["error"] += 1
         run.llm_errors = _total_llm_errors()
 
+    _log_summary(counts)
     logger.info("Run complete. Total Claude API cost: $%.4f", _total_cost_usd())
 
 

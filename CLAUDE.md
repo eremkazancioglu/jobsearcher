@@ -1393,6 +1393,25 @@ Adzuna's tier 3 too, since the code is shared:
   deterministic marker-based approach that worked cleanly for the other
   two.
 
+### End-of-run summary
+
+`main()` logs a per-platform breakdown as the last thing it does --
+written / already-seen / no-match / error counts per platform plus a
+total, e.g. `linkedin: 6 written, 2 already seen, 3 no match, 0 error(s)
+(11 total)`. Deliberately just appended to `digest_source`'s own log
+output rather than built as a separate GitHub Actions step: each
+`scripts/run_pipeline.py` stage runs as its own subprocess (see that
+script's own docstring), so a genuinely separate step couldn't reuse
+these in-memory counts -- it would have to re-query the DB after the fact
+instead, more machinery for the same information already sitting right
+at the end of this stage's log. `already_seen` isn't a failure (a repeat
+from a previous run's window); `no_match` is a real miss (search+capture
+found nothing confirmable); `error` is an outright exception. Counts are
+keyed by whichever `ParsedListing.platform` survived the cross-platform
+dedup for that listing -- see `dedupe_listings()`'s docstring for what
+that does and doesn't mean when the same posting appeared in more than
+one platform's digest.
+
 ---
 
 ## Sourcing strategy
