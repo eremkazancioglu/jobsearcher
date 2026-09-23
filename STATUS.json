@@ -1,26 +1,26 @@
 {
   "categorize": {
     "status": "success",
-    "started_at": "2026-09-23T02:38:31.683493+00:00",
-    "finished_at": "2026-09-23T02:38:48.735912+00:00",
-    "items_processed": 6,
-    "items_new": 6,
+    "started_at": "2026-09-23T15:58:37.743500+00:00",
+    "finished_at": "2026-09-23T15:58:41.136947+00:00",
+    "items_processed": 1,
+    "items_new": 1,
     "llm_errors": 0,
     "error_message": null
   },
   "digest": {
     "status": "success",
-    "started_at": "2026-09-23T02:38:49.764142+00:00",
-    "finished_at": "2026-09-23T02:38:50.040042+00:00",
-    "items_processed": 4,
-    "items_new": 4,
+    "started_at": "2026-09-23T15:58:42.413277+00:00",
+    "finished_at": "2026-09-23T15:58:45.621534+00:00",
+    "items_processed": 0,
+    "items_new": 0,
     "llm_errors": 0,
     "error_message": null
   },
   "pipeline": {
     "status": "success",
-    "started_at": "2026-09-23T02:00:24.494316+00:00",
-    "finished_at": "2026-09-23T02:38:50.142583+00:00",
+    "started_at": "2026-09-23T15:38:54.538797+00:00",
+    "finished_at": "2026-09-23T15:58:46.285085+00:00",
     "items_processed": 4,
     "items_new": 0,
     "llm_errors": 0,
@@ -28,20 +28,20 @@
   },
   "discovery": {
     "status": "success",
-    "started_at": "2026-09-23T02:00:36.368967+00:00",
-    "finished_at": "2026-09-23T02:00:37.658603+00:00",
-    "items_processed": 0,
-    "items_new": 0,
+    "started_at": "2026-09-23T15:39:00.109832+00:00",
+    "finished_at": "2026-09-23T15:39:05.057024+00:00",
+    "items_processed": 1,
+    "items_new": 1,
     "llm_errors": 0,
     "error_message": null
   },
   "digest_source": {
     "status": "success",
-    "started_at": "2026-09-23T02:00:40.594687+00:00",
-    "finished_at": "2026-09-23T02:38:29.350483+00:00",
-    "items_processed": 6,
-    "items_new": 6,
-    "llm_errors": 7,
+    "started_at": "2026-09-23T15:39:09.035112+00:00",
+    "finished_at": "2026-09-23T15:58:34.983359+00:00",
+    "items_processed": 0,
+    "items_new": 0,
+    "llm_errors": 1,
     "error_message": null
   }
 }
