@@ -1,26 +1,26 @@
 {
   "categorize": {
-    "status": "partial",
-    "started_at": "2026-09-25T16:09:11.477760+00:00",
-    "finished_at": "2026-09-25T16:09:11.873842+00:00",
-    "items_processed": 0,
-    "items_new": 0,
-    "llm_errors": 4,
-    "error_message": "91bb0e6e-8d0b-4196-8a65-29e4d237e5b7 (Data Scientist): Error code: 401 - {'type': 'error', 'error': {'type': 'authentication_error', 'message': 'API key is invalid.'}, 'request_id': None}; 8dacac7b-0d7b-405d-ad3a-97ddebf8666d (Principal Applied Data Scientist - Search and Browse (NLP, Vector Search, LLMs)): Error code: 401 - {'type': 'error', 'error': {'type': 'authentication_error', 'message': 'API key is invalid.'}, 'request_id': None}; dacdc528-2110-45cc-a717-9ec5dc19a5b2 (Principal Data Scientist (Partial Telework)): Error code: 401 - {'type': 'error', 'error': {'type': 'authentication_error', 'message': 'API key is invalid.'}, 'request_id': None}; f6fc59fd-4c75-40aa-8bd6-57d860b90864 (Data Scientist, Senior): Error code: 401 - {'type': 'error', 'error': {'type': 'authentication_error', 'message': 'API key is invalid.'}, 'request_id': None}"
+    "status": "success",
+    "started_at": "2026-09-25T18:48:51.031341+00:00",
+    "finished_at": "2026-09-25T18:49:07.374771+00:00",
+    "items_processed": 5,
+    "items_new": 5,
+    "llm_errors": 0,
+    "error_message": null
   },
   "digest": {
     "status": "success",
-    "started_at": "2026-09-25T16:09:13.087037+00:00",
-    "finished_at": "2026-09-25T16:09:14.780335+00:00",
-    "items_processed": 0,
-    "items_new": 0,
+    "started_at": "2026-09-25T18:49:08.363657+00:00",
+    "finished_at": "2026-09-25T18:49:09.783435+00:00",
+    "items_processed": 1,
+    "items_new": 1,
     "llm_errors": 0,
     "error_message": null
   },
   "pipeline": {
     "status": "success",
-    "started_at": "2026-09-25T16:00:16.011349+00:00",
-    "finished_at": "2026-09-25T16:09:15.314246+00:00",
+    "started_at": "2026-09-25T18:40:36.138776+00:00",
+    "finished_at": "2026-09-25T18:49:10.190894+00:00",
     "items_processed": 4,
     "items_new": 0,
     "llm_errors": 0,
@@ -28,20 +28,20 @@
   },
   "discovery": {
     "status": "success",
-    "started_at": "2026-09-25T16:00:23.030485+00:00",
-    "finished_at": "2026-09-25T16:08:56.466058+00:00",
-    "items_processed": 2,
-    "items_new": 2,
-    "llm_errors": 4,
+    "started_at": "2026-09-25T18:40:40.953311+00:00",
+    "finished_at": "2026-09-25T18:40:45.187785+00:00",
+    "items_processed": 0,
+    "items_new": 0,
+    "llm_errors": 0,
     "error_message": null
   },
   "digest_source": {
     "status": "success",
-    "started_at": "2026-09-25T16:08:59.787224+00:00",
-    "finished_at": "2026-09-25T16:09:09.061745+00:00",
-    "items_processed": 0,
-    "items_new": 0,
-    "llm_errors": 13,
+    "started_at": "2026-09-25T18:40:47.894677+00:00",
+    "finished_at": "2026-09-25T18:48:48.827605+00:00",
+    "items_processed": 1,
+    "items_new": 1,
+    "llm_errors": 2,
     "error_message": null
   }
 }
