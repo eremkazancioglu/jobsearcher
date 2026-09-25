@@ -1,26 +1,26 @@
 {
   "categorize": {
-    "status": "success",
-    "started_at": "2026-09-24T16:30:45.720177+00:00",
-    "finished_at": "2026-09-24T16:31:19.088484+00:00",
-    "items_processed": 10,
-    "items_new": 10,
-    "llm_errors": 0,
-    "error_message": null
+    "status": "partial",
+    "started_at": "2026-09-25T02:14:12.471589+00:00",
+    "finished_at": "2026-09-25T02:14:12.669782+00:00",
+    "items_processed": 0,
+    "items_new": 0,
+    "llm_errors": 2,
+    "error_message": "91bb0e6e-8d0b-4196-8a65-29e4d237e5b7 (Data Scientist): Error code: 401 - {'type': 'error', 'error': {'type': 'authentication_error', 'message': 'API key is invalid.'}, 'request_id': None}; 8dacac7b-0d7b-405d-ad3a-97ddebf8666d (Principal Applied Data Scientist - Search and Browse (NLP, Vector Search, LLMs)): Error code: 401 - {'type': 'error', 'error': {'type': 'authentication_error', 'message': 'API key is invalid.'}, 'request_id': None}"
   },
   "digest": {
     "status": "success",
-    "started_at": "2026-09-24T16:31:20.342479+00:00",
-    "finished_at": "2026-09-24T16:31:22.610511+00:00",
-    "items_processed": 6,
-    "items_new": 6,
+    "started_at": "2026-09-25T02:14:13.772369+00:00",
+    "finished_at": "2026-09-25T02:14:14.774831+00:00",
+    "items_processed": 0,
+    "items_new": 0,
     "llm_errors": 0,
     "error_message": null
   },
   "pipeline": {
     "status": "success",
-    "started_at": "2026-09-24T15:59:35.699116+00:00",
-    "finished_at": "2026-09-24T16:31:23.119225+00:00",
+    "started_at": "2026-09-25T02:05:23.392164+00:00",
+    "finished_at": "2026-09-25T02:14:15.071472+00:00",
     "items_processed": 4,
     "items_new": 0,
     "llm_errors": 0,
@@ -28,20 +28,20 @@
   },
   "discovery": {
     "status": "success",
-    "started_at": "2026-09-24T15:59:41.654261+00:00",
-    "finished_at": "2026-09-24T16:00:03.407747+00:00",
-    "items_processed": 4,
-    "items_new": 4,
-    "llm_errors": 0,
+    "started_at": "2026-09-25T02:05:29.097006+00:00",
+    "finished_at": "2026-09-25T02:14:00.390225+00:00",
+    "items_processed": 2,
+    "items_new": 2,
+    "llm_errors": 4,
     "error_message": null
   },
   "digest_source": {
     "status": "success",
-    "started_at": "2026-09-24T16:00:07.373158+00:00",
-    "finished_at": "2026-09-24T16:30:42.506927+00:00",
-    "items_processed": 6,
-    "items_new": 6,
-    "llm_errors": 3,
+    "started_at": "2026-09-25T02:14:03.142248+00:00",
+    "finished_at": "2026-09-25T02:14:10.332725+00:00",
+    "items_processed": 0,
+    "items_new": 0,
+    "llm_errors": 16,
     "error_message": null
   }
 }
