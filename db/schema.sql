@@ -1,9 +1,10 @@
 -- Drops and recreates every table -- running this wipes all existing data
--- (postings, agent_runs, application_events). Meant for a clean/reset run
--- against a dev database, not a way to apply incremental changes to one
--- already holding real captured postings.
+-- (postings, agent_runs, application_events, digest_search_misses). Meant
+-- for a clean/reset run against a dev database, not a way to apply
+-- incremental changes to one already holding real captured postings.
 drop table if exists application_events cascade;
 drop table if exists agent_runs cascade;
+drop table if exists digest_search_misses cascade;
 drop table if exists postings cascade;
 
 create extension if not exists pgcrypto;
@@ -81,3 +82,23 @@ create table application_events (
 );
 
 create index idx_agent_runs_agent_name on agent_runs(agent_name, started_at desc);
+
+-- Negative-result cache for agents/digest_source.py (Phase 4). A "no
+-- match" outcome (search+capture found nothing confirmable) never gets a
+-- postings row, unlike a genuine capture -- without this table there's no
+-- record that a given (title, company) was already tried and failed, so
+-- the same unresolvable listing re-sent in a later digest (common --
+-- LinkedIn alone re-surfaces open roles across many emails) would pay the
+-- full search+candidate-walk cost again from scratch every time it
+-- reappears. digest_source.py checks this before spending anything and
+-- skips (does not re-search) while a listing is within its cooldown --
+-- default 7 days, configurable via DIGEST_NO_MATCH_COOLDOWN_DAYS.
+create table digest_search_misses (
+    external_id text primary key,          -- same normalized-hash id used
+                                            -- for postings.external_id
+                                            -- when source='email_digest'
+    title text not null,
+    company text not null,
+    last_attempted_at timestamptz not null default now(),
+    attempt_count integer not null default 1
+);

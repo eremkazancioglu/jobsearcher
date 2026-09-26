@@ -282,11 +282,21 @@ def _handle_claude_cli_stderr(line: str) -> None:
 # candidate was the very first one walked, its confirm+extract call failed
 # outright with no error detail, and every remaining candidate was either
 # wrong or unfetchable, so the whole item got skipped for a reason that
-# had nothing to do with whether it was a match. One retry, not unbounded
-# -- this mirrors Adzuna's own retry-on-5xx in mcp_servers/job_sources/
-# server.py, same reasoning: a transient failure is worth one retry, but
-# repeating indefinitely would just burn budget against a real, persistent
-# problem (a hit max_budget_usd cap won't clear on retry either).
+# had nothing to do with whether it was a match. This mirrors Adzuna's own
+# retry-on-5xx in mcp_servers/job_sources/server.py, same reasoning: a
+# transient failure is worth a retry, but repeating indefinitely would
+# just burn budget against a real, persistent problem (a hit
+# max_budget_usd cap won't clear on retry either).
+#
+# This constant is the default for single-shot callers (_web_search,
+# _classify_work_location), where one call is the whole listing's spend on
+# that call anyway. It is NOT what bounds retries inside a candidate walk
+# -- confirmed real cost risk if it were: a walk can attempt up to
+# MAX_FALLBACK_CANDIDATES calls, and retrying every one of them
+# independently would let a single bad batch (several candidates all
+# hitting transient errors) multiply cost well past "one retry." Candidate
+# walk calls pass max_attempts=1 here instead, and walk_candidates()
+# manages one shared retry budget for the whole listing -- see there.
 CLAUDE_RETRY_ATTEMPTS = 2
 CLAUDE_RETRY_BACKOFF_S = 2.0
 
@@ -299,8 +309,15 @@ async def _run_claude_json(
     permission_mode: Optional[str] = None,
     max_turns: int = 1,
     trace_name: str = "claude_agent_sdk_call",
+    max_attempts: int = CLAUDE_RETRY_ATTEMPTS,
 ) -> Optional[dict]:
-    for attempt in range(1, CLAUDE_RETRY_ATTEMPTS + 1):
+    """max_attempts defaults to CLAUDE_RETRY_ATTEMPTS (retry once) for
+    single-shot callers (_web_search, _classify_work_location), where
+    "per call" and "per listing" are the same thing anyway. Callers inside
+    a candidate walk (_try_confirmed_extraction, via _confirm_and_extract)
+    pass max_attempts=1 here and manage their own single retry budget for
+    the whole walk instead -- see walk_candidates()."""
+    for attempt in range(1, max_attempts + 1):
         result = await _run_claude_json_once(
             prompt, schema,
             allowed_tools=allowed_tools, permission_mode=permission_mode,
@@ -308,8 +325,8 @@ async def _run_claude_json(
         )
         if result is not None:
             return result
-        if attempt < CLAUDE_RETRY_ATTEMPTS:
-            logger.info("Retrying Claude call (attempt %d/%d)", attempt + 1, CLAUDE_RETRY_ATTEMPTS)
+        if attempt < max_attempts:
+            logger.info("Retrying Claude call (attempt %d/%d)", attempt + 1, max_attempts)
             await asyncio.sleep(CLAUDE_RETRY_BACKOFF_S)
     return None
 
@@ -596,7 +613,10 @@ def _is_usable_length(text: Optional[str]) -> bool:
 
 
 async def _confirm_and_extract(
-    text: str, reference: PostingReference, page_title: Optional[str] = None
+    text: str,
+    reference: PostingReference,
+    page_title: Optional[str] = None,
+    max_attempts: int = 1,
 ) -> Optional[dict]:
     """Judge and extract in a single call, not two -- both operate on the
     same page text, so this halves the LLM round-trips per candidate versus
@@ -642,7 +662,9 @@ async def _confirm_and_extract(
         "way).\n\n"
         f"Page text:\n{text[:18000]}"
     )
-    return await _run_claude_json(prompt, CONFIRM_AND_EXTRACT_SCHEMA, trace_name="confirm_and_extract")
+    return await _run_claude_json(
+        prompt, CONFIRM_AND_EXTRACT_SCHEMA, trace_name="confirm_and_extract", max_attempts=max_attempts
+    )
 
 
 def _normalize_work_location(value: Any) -> Optional[str]:
@@ -701,41 +723,58 @@ async def _web_search(query_text: str) -> list[str]:
     return [url for url in result.get("urls", []) if isinstance(url, str)]
 
 
+@dataclass
+class ConfirmResult:
+    extraction: Optional[dict]
+    # True only when the LLM call itself failed outright (error, timeout) --
+    # distinct from a call that succeeded and legitimately rejected the
+    # candidate (wrong posting, gated). walk_candidates() uses this to
+    # decide which candidates are worth its one shared retry; a legitimate
+    # rejection is never worth retrying, since retrying won't change the
+    # judgment.
+    call_failed: bool
+
+
 async def _try_confirmed_extraction(
-    text: Optional[str], reference: PostingReference, page_title: Optional[str] = None
-) -> Optional[dict]:
+    text: Optional[str],
+    reference: PostingReference,
+    page_title: Optional[str] = None,
+    max_attempts: int = 1,
+) -> ConfirmResult:
     """Confirm identity and extract in one call. Used for tier 3 candidates
     only -- external pages (search results or a company's careers site)
     whose identity is genuinely uncertain, unlike tier 1/2's primary URL,
     which is handled deterministically in capture() (see there for why).
-    Returns the result dict (usable directly as an extraction --
-    full_description/salary_* fields) or None if the text was too short,
-    the call failed, or the page was rejected as gated / not the same
-    posting."""
+    ConfirmResult.extraction is the result dict (usable directly as an
+    extraction -- full_description/salary_* fields) or None if the text
+    was too short, the call failed, or the page was rejected as gated /
+    not the same posting -- ConfirmResult.call_failed distinguishes the
+    "call failed" case from the other two for walk_candidates()'s retry
+    budget."""
     if not _is_usable_length(text):
         logger.info(
             "Skipping confirm+extract for %s -- text too short/missing (%d chars)",
             reference.title, len(text) if text else 0,
         )
-        return None
-    result = await _confirm_and_extract(text, reference, page_title)
+        return ConfirmResult(extraction=None, call_failed=False)
+    result = await _confirm_and_extract(text, reference, page_title, max_attempts=max_attempts)
     if result is None:
         logger.info("Confirm+extract call failed for %s", reference.title)
-        return None
+        return ConfirmResult(extraction=None, call_failed=True)
     if result["gated"]:
         logger.info(
             "Confirm+extract rejected candidate for %s: judged gated (%s)",
             reference.title, result.get("reason"),
         )
-        return None
+        return ConfirmResult(extraction=None, call_failed=False)
     if not result["same_posting"]:
         logger.info(
             "Confirm+extract rejected candidate for %s: not judged the same posting (%s)",
             reference.title, result.get("reason"),
         )
-        return None
+        return ConfirmResult(extraction=None, call_failed=False)
     logger.info("Confirm+extract passed for %s", reference.title)
-    return result
+    return ConfirmResult(extraction=result, call_failed=False)
 
 
 async def walk_candidates(
@@ -744,22 +783,50 @@ async def walk_candidates(
     """Fetch each candidate URL in order through the tiered fetch, running
     confirm+extract on each, stopping at the first that passes. Shared by
     capture()'s tier 3 (Adzuna's own WebSearch-sourced candidates) and
-    agents/digest_source.py (Google CSE-sourced candidates) -- same walk,
-    different origin for the candidate list. Caller is responsible for
-    capping candidate_urls to MAX_FALLBACK_CANDIDATES before calling."""
+    agents/digest_source.py's candidates -- same walk, different origin
+    for the candidate list. Caller is responsible for capping
+    candidate_urls to MAX_FALLBACK_CANDIDATES before calling.
+
+    One retry budget for the *whole* walk, not one per candidate -- see
+    CLAUDE_RETRY_ATTEMPTS's comment for why per-candidate retries were
+    confirmed as a real cost risk. Every candidate's confirm+extract call
+    gets a single attempt (max_attempts=1); if nothing confirms and at
+    least one candidate's call failed outright (not just a legitimate
+    rejection), the earliest-ranked such candidate gets exactly one retry
+    -- earliest-ranked because search ranking correlates with likelihood
+    of being correct, so that's the candidate most worth spending the
+    retry on."""
+    retry_candidate: Optional[tuple[str, PageFetch]] = None
+
     for candidate_url in candidate_urls[:MAX_FALLBACK_CANDIDATES]:
         candidate_page = await _fetch_tiered(candidate_url)
-        candidate_extraction = await _try_confirmed_extraction(
+        result = await _try_confirmed_extraction(
             candidate_page.text if candidate_page else None,
             reference,
             candidate_page.page_title if candidate_page else None,
         )
-        if candidate_extraction is not None:
+        if result.extraction is not None:
             return CandidateMatch(
                 url=candidate_url,
-                extraction=candidate_extraction,
+                extraction=result.extraction,
                 remote_badge=candidate_page.remote_badge if candidate_page else None,
             )
+        if result.call_failed and retry_candidate is None and candidate_page is not None:
+            retry_candidate = (candidate_url, candidate_page)
+
+    if retry_candidate is not None:
+        candidate_url, candidate_page = retry_candidate
+        logger.info("Retrying the one call failure in this walk: %s", candidate_url)
+        result = await _try_confirmed_extraction(
+            candidate_page.text, reference, candidate_page.page_title
+        )
+        if result.extraction is not None:
+            return CandidateMatch(
+                url=candidate_url,
+                extraction=result.extraction,
+                remote_badge=candidate_page.remote_badge,
+            )
+
     return None
 
 

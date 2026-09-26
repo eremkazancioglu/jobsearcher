@@ -304,3 +304,40 @@ def sum_llm_errors_since(since) -> int:
                 (since,),
             )
             return cur.fetchone()[0]
+
+
+def record_search_miss(external_id: str, title: str, company: str) -> None:
+    """Upsert -- agents/digest_source.py calls this when search+capture
+    found nothing confirmable for a listing, so a later digest re-sending
+    the same unresolvable posting doesn't pay full search+candidate-walk
+    cost again from scratch (see digest_search_misses in schema.sql).
+    Refreshes last_attempted_at and bumps attempt_count on a repeat miss
+    rather than just leaving the original timestamp -- the cooldown always
+    counts from the most recent attempt, not the first one."""
+    with _connect() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                insert into digest_search_misses (external_id, title, company)
+                values (%s, %s, %s)
+                on conflict (external_id) do update set
+                    last_attempted_at = now(),
+                    attempt_count = digest_search_misses.attempt_count + 1
+                """,
+                (external_id, title, company),
+            )
+        conn.commit()
+
+
+def recent_search_miss(external_id: str, cooldown_days: int) -> bool:
+    """True if this listing missed within the last cooldown_days --
+    digest_source.py skips re-attempting search+capture for it until the
+    cooldown lapses."""
+    with _connect() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "select 1 from digest_search_misses "
+                "where external_id = %s and last_attempted_at > now() - (%s || ' days')::interval",
+                (external_id, cooldown_days),
+            )
+            return cur.fetchone() is not None

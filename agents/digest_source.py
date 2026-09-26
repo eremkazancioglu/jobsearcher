@@ -17,6 +17,7 @@ nothing here needs to change.
 
 import asyncio
 import logging
+import os
 import sys
 from collections import Counter, defaultdict
 from datetime import datetime, timedelta, timezone
@@ -36,7 +37,13 @@ from agents.fetchers import (
 from agents.fetchers import get_llm_error_count as fetchers_llm_error_count
 from agents.fetchers import get_total_cost_usd as fetchers_cost_usd
 from agents.gmail_client import search_html_messages
-from db.db import fetch_last_agent_run, insert_posting, posting_exists
+from db.db import (
+    fetch_last_agent_run,
+    insert_posting,
+    posting_exists,
+    record_search_miss,
+    recent_search_miss,
+)
 from models.schema import Posting
 
 logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
@@ -46,6 +53,39 @@ logging.getLogger("claude_agent_sdk").setLevel(logging.WARNING)
 SOURCE = "email_digest"
 AGENT_NAME = "digest_source"
 FALLBACK_LOOKBACK_HOURS = 24  # same fallback send_digest.py uses on its first-ever run
+
+# How long a "no match" result is trusted before re-attempting the same
+# listing -- confirmed real cost driver, not a hypothetical: an
+# unresolvable listing (recruiter repost, wrong company name, whatever the
+# reason) regularly gets re-sent across multiple digest emails, and
+# without this, each resend paid the full search+candidate-walk cost
+# again from scratch. Configurable since 7 days is a starting guess, not
+# a measured optimum.
+NO_MATCH_COOLDOWN_DAYS = int(os.environ.get("DIGEST_NO_MATCH_COOLDOWN_DAYS", "7"))
+
+# Known non-employer "company" values that sometimes show up in a digest
+# in place of the real (undisclosed) hiring employer -- staffing/
+# recruiting agencies and job boards that post under their own name for a
+# client that isn't named, plus literal placeholder values. Checked
+# case-insensitively before spending anything on search+capture, since
+# there's no real "Ladders" (etc.) posting to ever find. Confirmed real
+# case: "Ladders" burned a full search+10-candidate-walk on a live run
+# before resolving to nothing. The rest of this list is compiled from
+# general knowledge of which staffing firms commonly post under their own
+# name, not independently confirmed the same way -- treat it as a
+# starting point to prune or extend once real digest data shows what
+# actually shows up, same "confirm before assuming" standard as
+# JOB_BOARD_DOMAINS in digest_search.py.
+NON_EMPLOYER_COMPANIES = {
+    "ladders", "the ladders",
+    "jobot", "cybercoders",
+    "robert half", "insight global", "randstad", "adecco",
+    "kelly services", "aerotek", "teksystems", "kforce",
+    "manpowergroup", "manpower", "lhh", "michael page",
+    "robert walters", "hays", "beacon hill staffing group",
+    "motion recruitment", "vaco", "addison group", "apex systems", "yoh",
+    "confidential", "undisclosed",
+}
 
 
 def _total_cost_usd() -> float:
@@ -120,19 +160,40 @@ def dedupe_listings(listings: list[ParsedListing]) -> dict[str, ParsedListing]:
     return deduped
 
 
-ListingOutcome = Literal["written", "already_seen", "no_match"]
+ListingOutcome = Literal[
+    "written", "already_seen", "blocklisted", "cooldown_skip", "no_match"
+]
 
 
 async def process_listing(external_id: str, listing: ParsedListing) -> ListingOutcome:
     """Returns "written" if a new posting was captured and written,
-    "already_seen" if skipped as a repeat, or "no_match" if search+capture
-    found nothing confirmable (see capture_from_search()'s docstring for
-    why a miss here means skip entirely rather than write a degraded row).
-    Used both for run.record() bookkeeping and the end-of-run per-platform
-    summary in main()."""
+    "already_seen" if skipped as a repeat, "blocklisted" if the company is
+    a known non-employer, "cooldown_skip" if this exact listing recently
+    missed and hasn't cleared NO_MATCH_COOLDOWN_DAYS yet, or "no_match" if
+    search+capture found nothing confirmable this time (see
+    capture_from_search()'s docstring for why a miss here means skip
+    entirely rather than write a degraded row). Used both for
+    run.record() bookkeeping and the end-of-run per-platform summary in
+    main(). Checks are ordered cheapest-first: blocklist needs no DB call
+    at all, the other two are single indexed lookups, all before the
+    actually costly search+candidate-walk path."""
+    if listing.company.strip().lower() in NON_EMPLOYER_COMPANIES:
+        logger.info(
+            "Skipping %s -- %r is a known non-employer company, not a real hiring org",
+            listing.title, listing.company,
+        )
+        return "blocklisted"
+
     if posting_exists(SOURCE, external_id):
         logger.info("Skipping already-seen listing %s (%s)", external_id, listing.title)
         return "already_seen"
+
+    if recent_search_miss(external_id, NO_MATCH_COOLDOWN_DAYS):
+        logger.info(
+            "Skipping %s at %s -- missed within the last %d day(s), still in cooldown",
+            listing.title, listing.company, NO_MATCH_COOLDOWN_DAYS,
+        )
+        return "cooldown_skip"
 
     query = f"{listing.title} {listing.company}"
     candidate_urls = await digest_search.search(query)
@@ -149,6 +210,7 @@ async def process_listing(external_id: str, listing: ParsedListing) -> ListingOu
 
     if result is None:
         logger.info("No candidate confirmed for %s at %s -- skipping", listing.title, listing.company)
+        record_search_miss(external_id, listing.title, listing.company)
         return "no_match"
 
     posting = Posting(
@@ -175,13 +237,15 @@ async def process_listing(external_id: str, listing: ParsedListing) -> ListingOu
 
 def _log_summary(counts: dict[str, Counter]) -> None:
     """Per-platform breakdown of how every listing in this run's dedup set
-    resolved -- written, already-seen (not a failure, just a repeat), no
-    match found, or errored outright. Logged as the last thing this agent
-    does, so it's easy to find at the end of this stage's GitHub Actions
-    log without needing a separate step or a way to pass data between
-    run_pipeline.py's subprocess stages (each stage runs as its own
-    process, so a truly separate step would have to re-query the DB
-    rather than reuse these in-memory counts)."""
+    resolved -- written, already-seen (not a failure, just a repeat),
+    blocklisted (known non-employer company), cooldown-skipped (missed
+    recently, not retried yet), no match found, or errored outright.
+    Logged as the last thing this agent does, so it's easy to find at the
+    end of this stage's GitHub Actions log without needing a separate step
+    or a way to pass data between run_pipeline.py's subprocess stages
+    (each stage runs as its own process, so a truly separate step would
+    have to re-query the DB rather than reuse these in-memory counts)."""
+    fields = ("written", "already_seen", "blocklisted", "cooldown_skip", "no_match", "error")
     logger.info("=== Digest source summary ===")
     total = Counter()
     for platform in sorted(counts):
@@ -189,13 +253,15 @@ def _log_summary(counts: dict[str, Counter]) -> None:
         total.update(c)
         this_total = sum(c.values())
         logger.info(
-            "%s: %d written, %d already seen, %d no match, %d error(s) (%d total)",
-            platform, c["written"], c["already_seen"], c["no_match"], c["error"], this_total,
+            "%s: %d written, %d already seen, %d blocklisted, %d cooldown skip, "
+            "%d no match, %d error(s) (%d total)",
+            platform, *(c[f] for f in fields), this_total,
         )
     grand_total = sum(total.values())
     logger.info(
-        "TOTAL: %d written, %d already seen, %d no match, %d error(s) (%d total)",
-        total["written"], total["already_seen"], total["no_match"], total["error"], grand_total,
+        "TOTAL: %d written, %d already seen, %d blocklisted, %d cooldown skip, "
+        "%d no match, %d error(s) (%d total)",
+        *(total[f] for f in fields), grand_total,
     )
 
 

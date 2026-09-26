@@ -1396,21 +1396,99 @@ Adzuna's tier 3 too, since the code is shared:
 ### End-of-run summary
 
 `main()` logs a per-platform breakdown as the last thing it does --
-written / already-seen / no-match / error counts per platform plus a
-total, e.g. `linkedin: 6 written, 2 already seen, 3 no match, 0 error(s)
-(11 total)`. Deliberately just appended to `digest_source`'s own log
-output rather than built as a separate GitHub Actions step: each
+written / already-seen / blocklisted / cooldown-skipped / no-match /
+error counts per platform plus a total, e.g. `linkedin: 6 written, 2
+already seen, 1 blocklisted, 3 cooldown skip, 2 no match, 0 error(s) (14
+total)`. Deliberately just appended to `digest_source`'s own log output
+rather than built as a separate GitHub Actions step: each
 `scripts/run_pipeline.py` stage runs as its own subprocess (see that
 script's own docstring), so a genuinely separate step couldn't reuse
 these in-memory counts -- it would have to re-query the DB after the fact
 instead, more machinery for the same information already sitting right
 at the end of this stage's log. `already_seen` isn't a failure (a repeat
-from a previous run's window); `no_match` is a real miss (search+capture
-found nothing confirmable); `error` is an outright exception. Counts are
-keyed by whichever `ParsedListing.platform` survived the cross-platform
-dedup for that listing -- see `dedupe_listings()`'s docstring for what
-that does and doesn't mean when the same posting appeared in more than
-one platform's digest.
+from a previous run's window); `blocklisted` and `cooldown_skip` are
+deliberate cost-saving skips (see below), not failures either; `no_match`
+is a real miss (search+capture found nothing confirmable); `error` is an
+outright exception. Counts are keyed by whichever `ParsedListing.platform`
+survived the cross-platform dedup for that listing -- see
+`dedupe_listings()`'s docstring for what that does and doesn't mean when
+the same posting appeared in more than one platform's digest.
+
+### Cost controls, added after real per-listing cost turned out higher
+### than assumed
+
+The first real run's actual cost ($0.5256 for 7 listings, ~$0.075/listing
+average) confirmed something structural, not a tuning problem: unlike
+Adzuna, which resolves most postings via tier 1/2's free JSON-LD shortcut
+and only pays tier 3's cost occasionally, **every digest-sourced listing
+pays the full search+candidate-walk cost, with no free path at all** --
+there's no stable, ID-keyed page for this source to try first the way
+Adzuna's `/details/{id}` page lets tier 1/2 skip LLM calls entirely. Three
+changes address this, in order of expected impact:
+
+1. **Negative-result cache (`digest_search_misses` table), the highest-
+   leverage fix.** A "no match" outcome previously left no record
+   anywhere -- no `postings` row, nothing -- so the same unresolvable
+   listing re-sent in a later digest (confirmed common: LinkedIn alone
+   re-surfaces open roles across many emails) paid the *full*
+   search+candidate-walk cost again from scratch every time it
+   reappeared, with no memory that it had already failed. This targets
+   *repeated* waste on the same item, not just *per-attempt* cost the way
+   the other two changes do -- plausibly the largest single saving of the
+   three, though unmeasured until real repeat-send data accumulates.
+   `record_search_miss()`/`recent_search_miss()` in `db/db.py`;
+   `NO_MATCH_COOLDOWN_DAYS` (default 7, `DIGEST_NO_MATCH_COOLDOWN_DAYS` to
+   override) is deliberately configurable since 7 days is a starting
+   guess, not a measured optimum. Checked in `process_listing()` before
+   any search happens, alongside the existing `posting_exists()` check --
+   conceptually the same idea (don't redo expensive work on something
+   already resolved) applied to the negative case Adzuna's design never
+   needed a ledger for (see "why there's no separate dedup ledger" above
+   -- that reasoning assumed *capture always writes a row*, which holds
+   for Adzuna but not for this source's graceful-degrade-to-nothing
+   outcome).
+2. **`NON_EMPLOYER_COMPANIES` blocklist, checked before spending
+   anything.** Confirmed real case: "Ladders" (a job board, not an
+   employer -- LinkedIn had shown it as the "company" for a recruiter-
+   reposted listing whose actual employer isn't disclosed) burned a full
+   search+10-candidate-walk on a live run before resolving to nothing,
+   since there's no real "Ladders" posting to ever find. The rest of the
+   list (common staffing/recruiting firms that post under their own name
+   for undisclosed clients, plus literal placeholders like
+   "Confidential") is compiled from general knowledge, not independently
+   confirmed against real digest data the way "Ladders" was -- same
+   "starting point, prune or extend in practice" standard as
+   `JOB_BOARD_DOMAINS`. Lives in `agents/digest_source.py`, checked
+   case-insensitively, no DB call needed, so it's the cheapest possible
+   check -- runs first in `process_listing()`, before even
+   `posting_exists()`.
+3. **Retry capped at one per listing, not one per candidate.** The retry
+   added after the GM false-negative (see above) originally lived inside
+   `_run_claude_json` and applied independently to every candidate's
+   confirm+extract call -- meaning a listing whose walk hit several
+   failing candidates (plausible: several unfetchable/erroring URLs in
+   one 10-candidate list, seen in practice) could pay for a retry on each
+   one, multiplying cost on exactly the worst-case (all-miss) listings
+   this whole set of changes is trying to bound. `walk_candidates()` now
+   owns one shared retry budget for the entire walk: every candidate gets
+   a single attempt (`max_attempts=1`), and only if nothing confirms does
+   the *first* candidate whose call failed outright (not one that was
+   legitimately rejected -- `ConfirmResult.call_failed` distinguishes
+   these) get one retry, on the theory that search ranking correlates
+   with correctness so the earliest-ranked failure is the one most worth
+   spending the retry on. `_run_claude_json`'s own `CLAUDE_RETRY_ATTEMPTS`
+   default (retry once) is unchanged and still applies to single-shot
+   callers (`_web_search`, `_classify_work_location`), where "per call"
+   and "per listing" are the same thing anyway -- only the candidate-walk
+   path needed this distinction.
+
+**Deliberately not changed: schedule frequency.** Twice a day was
+considered and set aside for this round -- the cache above should mean a
+digest that would otherwise be processed twice (once per run within its
+window) is genuinely handled by the "since last run" windowing already in
+place, so cutting frequency was judged unlikely to add much on top of
+what these three changes already do, at the cost of latency on new
+postings. Revisit if real cost data after these land still looks high.
 
 ---
 
