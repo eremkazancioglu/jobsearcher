@@ -22,13 +22,29 @@ API's January 2027 discontinuation; new customers get nothing), not
 fixable by any project configuration. See CLAUDE.md's Phase 4 section for
 the full investigation.
 
-This turned out better than the Google CSE plan it replaced: allowed_domains
-covers subdomains automatically (a bare "greenhouse.io" entry matches
-"boards.greenhouse.io", any "{company}.greenhouse.io", etc. -- confirmed
-against current docs), so JOB_BOARD_DOMAINS below is bare hostnames, not
-the "*.example.com" wildcards Google's Programmable Search Engine needed
-(that pattern is explicitly invalid here). There's also no 50-domain cap
-here the way there was on a newly created Programmable Search Engine.
+Domain restriction here is a blocklist (blocked_domains=["linkedin.com"]),
+not an allowlist -- confirmed as the right call, not the original design.
+The original allowed_domains=JOB_BOARD_DOMAINS approach (an allowlist of
+known ATS/job-board domains, inherited from the Google CSE plan it
+replaced) was tested head-to-head against whole-web + blocklist on 5 real
+digest listings: the allowlist matched 2 of 5, missing two postings
+(PwC, General Motors) that turned out to be hosted on the company's own
+custom-branded careers portal (jobs-us.pwc.com, search-careers.gm.com) --
+neither on the allowlist, and no allowlist could ever anticipate every
+company's own domain in advance. Whole-web + blocklist matched 5 of 5 on
+the same listings, confirming this the same way Adzuna's own tier 3
+already works (fetchers.py's _web_search() has never used a domain
+allowlist at all). linkedin.com is the one domain still excluded --
+confirmed bot-blocked (fetching a LinkedIn job page hits real
+bot-detection), so a candidate there would just fail the fetch regardless
+of ranking. wellfound.com and builtin.com are deliberately left
+unblocked despite being two of the three digest sources -- confirmed not
+bot-blocked, full descriptions visible, no login wall, and landing back
+on the exact listing there is often the most accurate candidate
+available. See CLAUDE.md's Phase 4 section for the full comparison,
+including the Brave Search API side-by-side that confirmed this isn't
+about search-provider quality: Claude's web_search and Brave performed
+near-identically once the allowlist was removed.
 """
 
 import logging
@@ -57,27 +73,12 @@ _PRICE_OUTPUT = 5.0 / 1_000_000
 
 _client = anthropic.AsyncAnthropic(timeout=CLAUDE_QUERY_TIMEOUT_S)
 
-# Single source of truth for the domain restriction actually in effect.
-# wellfound.com and builtin.com are deliberately included (confirmed not
-# bot-blocked, full descriptions visible with no login wall);
-# linkedin.com is deliberately excluded (confirmed bot-blocked) -- see
-# CLAUDE.md's Phase 4 section for what was checked before relying on any
-# of this.
-JOB_BOARD_DOMAINS = [
-    "greenhouse.io", "lever.co", "ashbyhq.com", "myworkdayjobs.com",
-    "smartrecruiters.com", "icims.com", "workable.com", "jobvite.com",
-    "taleo.net", "successfactors.com", "adp.com", "applytojob.com",
-    "jazzhr.com", "breezy.hr", "recruitee.com", "comeet.co",
-    "teamtailor.com", "personio.com", "personio.de", "bamboohr.com",
-    "dayforcehcm.com", "trakstar.com", "hiringthing.com", "jobscore.com",
-    "avature.net", "eightfold.ai", "oraclecloud.com", "csod.com",
-    "ultipro.com", "phenompeople.com", "paylocity.com", "zohorecruit.com",
-    "freshteam.com", "homerun.co", "dice.com", "workatastartup.com",
-    "otta.com", "himalayas.app", "remoteok.com", "remotive.com",
-    "weworkremotely.com", "welcometothejungle.com", "wellfound.com", "builtin.com",
-    # Lower confidence -- exact hostname not verified against a real posting yet:
-    "paycomonline.net", "bullhornstaffing.com", "clearcompany.com", "jobadder.com",
-]
+# The one domain excluded from search -- confirmed bot-blocked (fetching a
+# LinkedIn job page hits real bot-detection), so a candidate there would
+# just fail the fetch regardless of ranking. wellfound.com and builtin.com
+# (the other two digest sources) are deliberately NOT here -- see this
+# module's docstring for why.
+BLOCKED_DOMAINS = ["linkedin.com"]
 
 _total_cost_usd = 0.0
 _llm_error_count = 0
@@ -109,7 +110,7 @@ def get_llm_error_count() -> int:
 
 @observe(name="digest_web_search")
 async def search(query: str) -> list[str]:
-    """One web_search call, domain-restricted to JOB_BOARD_DOMAINS,
+    """One whole-web web_search call, excluding only BLOCKED_DOMAINS,
     returning up to MAX_RESULTS ranked candidate URLs in the order
     returned. Unlike fetchers.py's _web_search() (which asks Claude to
     report URLs back as structured output, since claude_agent_sdk's
@@ -129,7 +130,7 @@ async def search(query: str) -> list[str]:
                     "type": "web_search_20250305",
                     "name": "web_search",
                     "max_uses": 1,
-                    "allowed_domains": JOB_BOARD_DOMAINS,
+                    "blocked_domains": BLOCKED_DOMAINS,
                 }
             ],
         )

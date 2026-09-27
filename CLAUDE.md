@@ -1017,20 +1017,20 @@ principle applied to a second input source.
 
 What happens *after* that extraction differs per platform, and isn't
 governed by this same reasoning:
-- **linkedin.com** is excluded from the `JOB_BOARD_DOMAINS` search
-  allowlist (see below) and so is never a candidate a search result can
-  point at -- confirmed directly that fetching a LinkedIn job page hits
-  bot-detection blocking, the same access problem "Deliberately ruled
-  out" already names for LinkedIn generally.
-- **wellfound.com and builtin.com** *are* included in
-  `JOB_BOARD_DOMAINS` -- their own job pages are ordinary public pages a
-  tier 1/2 fetch can read like any other company or ATS site in this
-  project, confirmed directly (no bot-blocking, no login wall, full
-  description visible -- see the domain list below for what was
-  checked). No legal-risk concern equivalent to LinkedIn's was found for
-  either -- that concern was specifically about LinkedIn's own terms and
-  the Proxycurl precedent, not something that generalizes to every site a
-  digest email happens to come from.
+- **linkedin.com** is the one domain excluded from search
+  (`BLOCKED_DOMAINS` -- see below) and so is never a candidate a search
+  result can point at -- confirmed directly that fetching a LinkedIn job
+  page hits bot-detection blocking, the same access problem "Deliberately
+  ruled out" already names for LinkedIn generally.
+- **wellfound.com and builtin.com** are *not* blocked -- their own job
+  pages are ordinary public pages a tier 1/2 fetch can read like any
+  other company or ATS site in this project, confirmed directly (no
+  bot-blocking, no login wall, full description visible -- see the
+  search mechanism below for what was checked). No legal-risk concern
+  equivalent to LinkedIn's was found for either -- that concern was
+  specifically about LinkedIn's own terms and the Proxycurl precedent,
+  not something that generalizes to every site a digest email happens to
+  come from.
 
 ### What this builds
 
@@ -1076,109 +1076,99 @@ governed by this same reasoning:
      on the same day, and deduping first avoids paying for the
      search+confirm+extract pipeline twice for what's actually one
      posting.
-2. **Search via `agents/digest_search.py`**, a domain-restricted raw
-   Anthropic SDK `web_search` call, one query per extracted
-   `(title, company)` pair, `"{title} {company}"`, returning up to 10
-   ranked candidate URLs.
+2. **Search via `agents/digest_search.py`**, a whole-web raw Anthropic SDK
+   `web_search` call, one query per extracted `(title, company)` pair,
+   `"{title} {company}"`, returning up to 10 ranked candidate URLs.
    - **Google's Custom Search JSON API was the original plan here and is
      now abandoned -- confirmed dead, not a config problem.** Built out
-     in full first (a Programmable Search Engine, a `JOB_BOARD_DOMAINS`
-     allowlist worked around Google's 50-domain cap and public-suffix
-     wildcard restriction, an API key correctly scoped and billed) and
-     it never worked: every request failed with `403 "This project does
-     not have the access to Custom Search JSON API"`, reproduced
-     identically across two entirely separate from-scratch Google Cloud
-     projects, correctly configured both times (confirmed via the API's
-     own canonical status page showing "Enabled", not just the
-     restriction dropdown). Traced to a real, current Google policy, not
-     a mistake: Google closed Custom Search JSON API to new customers at
-     some point before this was built (existing customers keep access
-     until the API's discontinuation on January 1, 2027; new ones get
-     nothing, confirmed via Google's own developer/support forum
-     threads reporting the identical error). No project configuration
-     can fix this -- it's not fixable at all for a project that didn't
-     already have access.
-   - **The raw Anthropic SDK's `web_search` tool replaced it, and turned
-     out better, not just as-good.** `allowed_domains` on the
-     `web_search_20250305` tool definition does the same job Google's
-     domain-restricted engine was built for, confirmed directly against
-     current docs and a live call: a bare domain like `myworkdayjobs.com`
-     automatically covers every subdomain under it (confirmed live: a
-     real search matched `leidos.wd5.myworkdayjobs.com` from that one
-     bare entry) -- no `*.example.com` wildcard needed at all, and that
-     exact pattern is explicitly rejected by this tool if attempted. No
-     50-domain cap either. This is a second, deliberate raw-SDK
-     exception in this project, alongside `categorize.py`'s -- checked
-     directly, `claude_agent_sdk`'s `ClaudeAgentOptions` (what
-     `fetchers.py`'s tier 3 `_web_search()` uses for Adzuna) has no
-     `allowed_domains`/`blocked_domains` field at all; that field only
-     exists on the raw Messages API's tool definition. Own cost/error
-     counters, tracked separately from `fetchers.py`'s (different Claude
-     client), same reasoning as `categorize.py`'s independent counter --
-     `digest_source.py` sums both when reporting a run's total.
-   - **Real coverage gap, not a bug to fix later.** A company with a
-     fully custom-built, self-hosted careers page on its own domain
-     still won't surface, since `JOB_BOARD_DOMAINS` is still a curated
-     allowlist, not whole-web search (unrestricted search was ruled out
-     for this source from the start, independent of which provider ended
-     up implementing the restriction -- see "wellfound.com and
-     builtin.com are included" below for why the three digest platforms
-     themselves are handled by allowlist inclusion/exclusion rather than
-     turning off restriction entirely). Graceful degrade (skip, don't
-     block the run) covers this the same way it covers tier 3 finding
-     nothing -- confirmed live on real digest data that this is a normal
-     outcome, not a crash: one real candidate walk correctly rejected a
-     generic company careers-landing page before matching the right one.
-   - **`JOB_BOARD_DOMAINS`** (in `agents/digest_search.py`) -- bare
-     hostnames, not `*.example.com` wildcards (subdomains are automatic,
-     see above), kept as the single source of truth for what's actually
-     configured, the same "kept in sync deliberately" reasoning as
-     Phase 1's three-places CLI-default list:
-     ```
-     greenhouse.io       dayforcehcm.com     freshteam.com
-     lever.co            trakstar.com        homerun.co
-     ashbyhq.com         hiringthing.com     dice.com
-     myworkdayjobs.com   jobscore.com        workatastartup.com
-     smartrecruiters.com avature.net         otta.com
-     icims.com           eightfold.ai        himalayas.app
-     workable.com        oraclecloud.com     remoteok.com
-     jobvite.com         csod.com            remotive.com
-     taleo.net           ultipro.com         weworkremotely.com
-     successfactors.com  phenompeople.com    welcometothejungle.com
-     adp.com             paylocity.com       wellfound.com
-     applytojob.com      zohorecruit.com     builtin.com
-     jazzhr.com          paycomonline.net  (lower confidence --
-     breezy.hr           bullhornstaffing.com  exact hostname not
-     recruitee.com       clearcompany.com      verified against a
-     comeet.co           jobadder.com          real posting yet)
-     teamtailor.com
-     personio.com
-     personio.de
-     bamboohr.com
-     ```
-     **`wellfound.com` and `builtin.com` are included, `linkedin.com` is
-     not -- a real distinction, not a blanket "exclude digest sources"
-     rule.** The original instinct was to exclude all three digest
-     platforms from the search allowlist, the same way LinkedIn's own
-     results are excluded. That instinct was right for LinkedIn only:
-     confirmed directly (fetching a LinkedIn job page hits bot-detection
-     blocking), so it stays excluded -- a candidate URL there would just
-     fail the fetch. BuiltIn and Wellfound were checked the same way and
-     came back clean: a real BuiltIn posting
-     (`builtin.com/job/data-scientist-remote/9477437`, Optum) loaded with
-     full description, requirements, and salary visible, no login wall;
-     Wellfound's listing pages showed the same (a specific old posting
-     returned a clean `410 Gone` -- a legitimately closed listing, not a
-     block). Both are platforms companies post to directly, the same
-     relationship as Greenhouse or Lever, not just re-aggregators -- so a
-     Wellfound/BuiltIn page surfacing as the top candidate for an item
+     in full first (a Programmable Search Engine, a domain allowlist
+     worked around Google's 50-domain cap and public-suffix wildcard
+     restriction, an API key correctly scoped and billed) and it never
+     worked: every request failed with `403 "This project does not have
+     the access to Custom Search JSON API"`, reproduced identically
+     across two entirely separate from-scratch Google Cloud projects,
+     correctly configured both times (confirmed via the API's own
+     canonical status page showing "Enabled", not just the restriction
+     dropdown). Traced to a real, current Google policy, not a mistake:
+     Google closed Custom Search JSON API to new customers at some point
+     before this was built (existing customers keep access until the
+     API's discontinuation on January 1, 2027; new ones get nothing,
+     confirmed via Google's own developer/support forum threads
+     reporting the identical error). No project configuration can fix
+     this -- it's not fixable at all for a project that didn't already
+     have access.
+   - **The raw Anthropic SDK's `web_search` tool replaced it -- first
+     with an `allowed_domains` allowlist (carried over from the Google
+     CSE plan), then with a `blocked_domains` blocklist once the
+     allowlist was confirmed to be actively costing matches.** Two
+     real postings (PwC's "Payer Healthcare Data Scientist, Manager",
+     General Motors' "Manager, AV Evaluation Framework") turned out to
+     be hosted on the company's own custom-branded careers portal
+     (`jobs-us.pwc.com`, `search-careers.gm.com`) rather than a
+     third-party ATS -- neither domain was on the curated allowlist, and
+     no allowlist could ever anticipate every company's own domain in
+     advance. This is the same structural gap Phase 1 already accepts
+     for Adzuna ("a company with a fully custom-built, self-hosted
+     careers page" -- see "Why no dedicated Greenhouse/Lever/Ashby tools"
+     above), just showing up here too. Tested head-to-head on 5 real
+     digest listings, same reference, same confirm+extract judgment,
+     only the candidate source differing: the allowlist matched 2 of 5;
+     whole-web + `blocked_domains=["linkedin.com"]` matched 5 of 5 on the
+     identical listings, recovering both the PwC and GM cases the
+     allowlist had been silently losing. This also matches how Adzuna's
+     own tier 3 already works -- `fetchers.py`'s `_web_search()` has
+     never used a domain allowlist at all.
+   - **A Brave Search API side-by-side confirmed this was a domain-
+     restriction problem, not a search-quality problem** -- worth
+     recording since it settles a real "is our search good enough"
+     question that came up while investigating this, not just the
+     allowlist fix itself. Brave's raw (unfiltered) results for the PwC
+     query ranked the exact right posting #1 and #2; the only reason
+     Claude's `web_search` had missed it was that `pwc.com` wasn't on
+     the allowlist, not that the ranking was worse. Once both were
+     re-tested whole-web with only `linkedin.com` excluded, Claude's
+     `web_search` and Brave performed near-identically on the same 5
+     listings (5/5 both, similar candidate depth, 4 of 5 final matches
+     landing on the exact same URL) -- confirming the fix was the domain
+     restriction, not the search provider, and Brave was not adopted
+     (no new vendor, no new API key, no new cost-tracking needed for the
+     same outcome).
+   - **A recurring, unplanned-for pattern from that same testing: real
+     matches often land on third-party job-mirror sites
+     (`freehire.me`, `zapply.jobs`), not the company's own page, even
+     when the official page is also in the candidate list.** In 4 of the
+     5 test listings, confirm+extract confirmed a mirror site instead of
+     the real employer's page that was also present as a candidate
+     (sometimes ranked higher) -- the working theory is that official
+     corporate career sites are often heavy JS/SPA frontends that tier
+     1/2's fetch struggles with (thin text, tier 2 render timeouts,
+     already a known failure mode elsewhere in this doc), while mirror
+     sites serve simple, easily-scraped static HTML that fetches
+     reliably regardless of rank. Accepted as-is for now -- the
+     description content is presumably accurate (mirroring real listings
+     is these sites' whole business model), the same "graceful degrade,
+     take what's fetchable" philosophy as everywhere else in this
+     project -- but their content/reliability hasn't been independently
+     verified the way `wellfound.com`/`builtin.com` were, and this is
+     worth revisiting if it turns out to matter (e.g. reordering
+     candidates to prefer a domain that contains the company's own name
+     before falling back to others, rather than pure search-rank order).
+   - **`BLOCKED_DOMAINS = ["linkedin.com"]`** (in `agents/digest_search.py`)
+     -- confirmed bot-blocked (fetching a LinkedIn job page hits real
+     bot-detection), so a candidate there would just fail the fetch
+     regardless of ranking; this is the only domain excluded.
+     `wellfound.com` and `builtin.com` (the other two digest sources) are
+     deliberately *not* blocked -- confirmed not bot-blocked, full
+     descriptions visible, no login wall (a real BuiltIn posting,
+     `builtin.com/job/data-scientist-remote/9477437`, Optum, loaded with
+     full description/requirements/salary; a specific old Wellfound
+     posting returned a clean `410 Gone` -- a legitimately closed
+     listing, not a block). Both are platforms companies post to
+     directly, the same relationship as Greenhouse or Lever, not just
+     re-aggregators -- so one surfacing as the top candidate for an item
      that came from that platform's own digest isn't a wasted, circular
      result, it's often the single most accurate one available, since
-     it's literally where the title+company was read from. The four
-     marked lower-confidence were named from general knowledge of each
-     platform, not confirmed against a live posting the way every other
-     sourcing claim in this document is -- verify (or drop) them once
-     real search volume is flowing.
+     it's literally where the title+company was read from.
 3. **Candidate walk, reused as-is from tier 3** -- the 10 ranked
    candidates are walked in order through the *same* tiered fetch
    (`fetchers.py`'s tier 1 plain fetch, escalating to tier 2's headless
@@ -1294,8 +1284,8 @@ job-hunt-agents/
     ├── digest_source.py          # orchestration: pull parsers -> fetch emails
     │                              # -> pool+dedupe -> digest_search.search()
     │                              # -> reuses fetchers.py's candidate walk
-    ├── digest_search.py          # raw Anthropic SDK web_search, allowed_domains
-    │                              # restricted to JOB_BOARD_DOMAINS
+    ├── digest_search.py          # raw Anthropic SDK web_search, whole-web,
+    │                              # blocked_domains=["linkedin.com"] only
     ├── gmail_client.py           # shared Gmail read access (also used by
     │                              # Phase 3's tracker, once that's built)
     └── digest_parsers/
@@ -1457,8 +1447,9 @@ changes address this, in order of expected impact:
    for undisclosed clients, plus literal placeholders like
    "Confidential") is compiled from general knowledge, not independently
    confirmed against real digest data the way "Ladders" was -- same
-   "starting point, prune or extend in practice" standard as
-   `JOB_BOARD_DOMAINS`. Lives in `agents/digest_source.py`, checked
+   "starting point, prune or extend in practice" standard as everything
+   else confirmed-by-inference rather than directly in this document.
+   Lives in `agents/digest_source.py`, checked
    case-insensitively, no DB call needed, so it's the cheapest possible
    check -- runs first in `process_listing()`, before even
    `posting_exists()`.
