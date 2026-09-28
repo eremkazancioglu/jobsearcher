@@ -1,26 +1,26 @@
 {
   "categorize": {
     "status": "success",
-    "started_at": "2026-09-28T02:12:56.671764+00:00",
-    "finished_at": "2026-09-28T02:13:08.525191+00:00",
-    "items_processed": 4,
-    "items_new": 4,
+    "started_at": "2026-09-28T19:05:36.133803+00:00",
+    "finished_at": "2026-09-28T19:06:19.118682+00:00",
+    "items_processed": 14,
+    "items_new": 14,
     "llm_errors": 0,
     "error_message": null
   },
   "digest": {
     "status": "success",
-    "started_at": "2026-09-28T02:13:10.436757+00:00",
-    "finished_at": "2026-09-28T02:13:10.736755+00:00",
-    "items_processed": 2,
-    "items_new": 2,
+    "started_at": "2026-09-28T19:06:20.221450+00:00",
+    "finished_at": "2026-09-28T19:06:22.396162+00:00",
+    "items_processed": 5,
+    "items_new": 5,
     "llm_errors": 0,
     "error_message": null
   },
   "pipeline": {
     "status": "success",
-    "started_at": "2026-09-28T02:08:50.231152+00:00",
-    "finished_at": "2026-09-28T02:13:10.808648+00:00",
+    "started_at": "2026-09-28T18:49:31.900191+00:00",
+    "finished_at": "2026-09-28T19:06:22.863681+00:00",
     "items_processed": 4,
     "items_new": 0,
     "llm_errors": 0,
@@ -28,20 +28,20 @@
   },
   "discovery": {
     "status": "success",
-    "started_at": "2026-09-28T02:08:56.050032+00:00",
-    "finished_at": "2026-09-28T02:08:57.191269+00:00",
-    "items_processed": 0,
-    "items_new": 0,
+    "started_at": "2026-09-28T18:49:37.420353+00:00",
+    "finished_at": "2026-09-28T18:50:13.518042+00:00",
+    "items_processed": 3,
+    "items_new": 3,
     "llm_errors": 0,
     "error_message": null
   },
   "digest_source": {
     "status": "success",
-    "started_at": "2026-09-28T02:08:59.489385+00:00",
-    "finished_at": "2026-09-28T02:12:55.028978+00:00",
-    "items_processed": 4,
-    "items_new": 4,
-    "llm_errors": 0,
+    "started_at": "2026-09-28T18:50:16.711814+00:00",
+    "finished_at": "2026-09-28T19:05:33.761265+00:00",
+    "items_processed": 11,
+    "items_new": 11,
+    "llm_errors": 2,
     "error_message": null
   }
 }
