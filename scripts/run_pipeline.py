@@ -33,11 +33,13 @@ import asyncio
 import logging
 import subprocess
 import sys
+from datetime import datetime, timezone
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from agents.common import AgentRunTracker
+from db.db import sum_llm_cost_since
 
 logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
 logger = logging.getLogger(__name__)
@@ -85,6 +87,12 @@ def _run_stage(name: str, cmd: list[str]) -> bool:
 
 async def main() -> None:
     args = parse_args()
+    # Anchors sum_llm_cost_since() below -- each stage runs as its own
+    # subprocess (see this module's docstring), so there's no shared
+    # in-process cost counter to just add up directly; this timestamp is
+    # what lets us sum every stage's persisted agent_runs.llm_cost_usd
+    # after the fact instead.
+    pipeline_started_at = datetime.now(timezone.utc)
     stages = [
         ("discovery", _discovery_cmd(args)),
         ("digest_source", ["uv", "run", "agents/digest_source.py"]),
@@ -101,10 +109,13 @@ async def main() -> None:
                 failed.append(name)
                 run.record_error(f"{name} stage exited non-zero")
 
+    total_cost = sum_llm_cost_since(pipeline_started_at)
     if failed:
         logger.error("Pipeline run finished with failed stage(s): %s", ", ".join(failed))
+        logger.info("Pipeline run total Claude API cost: $%.4f", total_cost)
         sys.exit(1)
     logger.info("Pipeline run complete -- all stages succeeded.")
+    logger.info("Pipeline run total Claude API cost: $%.4f", total_cost)
 
 
 if __name__ == "__main__":

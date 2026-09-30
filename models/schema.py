@@ -101,6 +101,7 @@ class AgentRun(BaseModel):
     items_processed: int = 0
     items_new: int = 0
     llm_errors: int = 0
+    llm_cost_usd: float = 0.0
     error_message: Optional[str] = None
 
 

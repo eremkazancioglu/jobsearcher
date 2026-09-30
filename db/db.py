@@ -131,10 +131,10 @@ def insert_agent_run(run: AgentRun) -> None:
                 """
                 insert into agent_runs (
                     agent_name, started_at, finished_at, status,
-                    items_processed, items_new, llm_errors, error_message
+                    items_processed, items_new, llm_errors, llm_cost_usd, error_message
                 ) values (
                     %(agent_name)s, %(started_at)s, %(finished_at)s, %(status)s,
-                    %(items_processed)s, %(items_new)s, %(llm_errors)s, %(error_message)s
+                    %(items_processed)s, %(items_new)s, %(llm_errors)s, %(llm_cost_usd)s, %(error_message)s
                 )
                 """,
                 run.model_dump(
@@ -146,6 +146,7 @@ def insert_agent_run(run: AgentRun) -> None:
                         "items_processed",
                         "items_new",
                         "llm_errors",
+                        "llm_cost_usd",
                         "error_message",
                     }
                 ),
@@ -288,6 +289,24 @@ def fetch_last_agent_run(agent_name: str):
                 (agent_name,),
             )
             return cur.fetchone()
+
+
+def sum_llm_cost_since(since) -> float:
+    """Total llm_cost_usd across every agent_runs row since `since`,
+    regardless of agent_name -- used by scripts/run_pipeline.py to log one
+    whole-run total after all stages finish, since each stage runs as its
+    own subprocess and its in-process cost counter (fetchers.py's/
+    categorize.py's/digest_search.py's get_total_cost_usd()) resets to
+    zero at the start of the next one. No agent_name filter (unlike
+    sum_llm_errors_since) since a pipeline run's total should include every
+    stage that spent anything, not just discovery/categorize."""
+    with _connect() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "select coalesce(sum(llm_cost_usd), 0) from agent_runs where started_at > %s",
+                (since,),
+            )
+            return float(cur.fetchone()[0])
 
 
 def sum_llm_errors_since(since) -> int:

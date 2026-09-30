@@ -221,6 +221,7 @@ async def main() -> None:
             except Exception as e:
                 run.record_error(f"{posting.id} ({posting.title}): {e}")
         run.llm_errors = get_llm_error_count()
+        run.llm_cost_usd = get_total_cost_usd()
 
     logger.info("Run complete. Total Claude API cost: $%.4f", get_total_cost_usd())
 

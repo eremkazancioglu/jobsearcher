@@ -67,6 +67,12 @@ create table agent_runs (
                                              -- (rate limit, out of credits, budget cap,
                                              -- auth) -- distinct from a posting merely
                                              -- degrading gracefully to a lower tier
+    llm_cost_usd numeric not null default 0, -- this agent's own Claude API spend for
+                                              -- this run -- scripts/run_pipeline.py
+                                              -- sums this across stages for one
+                                              -- whole-run total, since each stage's
+                                              -- in-process cost counter resets to
+                                              -- zero (runs as its own subprocess)
     error_message text
 );
 

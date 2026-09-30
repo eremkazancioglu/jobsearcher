@@ -7,9 +7,11 @@ every Phase 2 agent logs consistently instead of hand-rolling this.
             run.record(is_new=True)
         # or, on a per-item failure that shouldn't fail the whole run:
         run.record_error("posting abc123: Claude call failed")
-    # If this agent makes Claude calls, set this before the block exits --
-    # see fetchers.py's / categorize.py's own get_llm_error_count():
+    # If this agent makes Claude calls, set these before the block exits --
+    # see fetchers.py's / categorize.py's own get_llm_error_count() and
+    # get_total_cost_usd():
     run.llm_errors = get_llm_error_count()
+    run.llm_cost_usd = get_total_cost_usd()
 
 On exit, writes one row to `agent_runs` and updates this agent's entry in
 STATUS.json (a flat file at the repo root -- committed by the GitHub
@@ -49,6 +51,7 @@ class AgentRunTracker:
         self.items_processed = 0
         self.items_new = 0
         self.llm_errors = 0
+        self.llm_cost_usd = 0.0
         self._errors: list[str] = []
         self._started_at: Optional[datetime] = None
 
@@ -85,15 +88,17 @@ class AgentRunTracker:
             items_processed=self.items_processed,
             items_new=self.items_new,
             llm_errors=self.llm_errors,
+            llm_cost_usd=self.llm_cost_usd,
             error_message=error_message,
         )
         insert_agent_run(run)
         _update_status_json(run)
         logger.info(
-            "%s run %s: %d processed, %d new%s%s",
+            "%s run %s: %d processed, %d new%s%s%s",
             self.agent_name, status, self.items_processed, self.items_new,
             f" ({len(self._errors)} error(s))" if self._errors else "",
             f", {self.llm_errors} LLM call error(s)" if self.llm_errors else "",
+            f", ${self.llm_cost_usd:.4f} Claude API cost" if self.llm_cost_usd else "",
         )
         # Don't suppress the exception -- __aexit__ returning None/False
         # lets it propagate as normal.
@@ -116,6 +121,7 @@ def _update_status_json(run: AgentRun) -> None:
         "items_processed": run.items_processed,
         "items_new": run.items_new,
         "llm_errors": run.llm_errors,
+        "llm_cost_usd": run.llm_cost_usd,
         "error_message": run.error_message,
     }
     STATUS_PATH.write_text(json.dumps(status, indent=2) + "\n", encoding="utf-8")

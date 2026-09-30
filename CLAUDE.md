@@ -110,6 +110,9 @@ create table agent_runs (
     llm_errors integer not null default 0,  -- Claude API calls that raised outright,
                                              -- distinct from graceful degrade -- see
                                              -- Phase 2's "Slack digest" section
+    llm_cost_usd numeric not null default 0, -- this agent's own Claude spend this
+                                              -- run -- added in Phase 4, see
+                                              -- "Monitoring and observability"
     error_message text
 );
 
@@ -1635,6 +1638,21 @@ than new tools:
    a couple of failures is visibly distinct from a clean run, without
    being conflated with "the whole run crashed." This is what the
    Streamlit "pipeline health" tab reads.
+   - **`llm_cost_usd`** -- this agent's own Claude API spend for this
+     run, same "caller sets it themselves before the block exits" pattern
+     as `llm_errors` (`run.llm_cost_usd = get_total_cost_usd()`). Added
+     specifically so `scripts/run_pipeline.py` can log one whole-run
+     total after all stages finish -- each stage runs as its own
+     subprocess (see that script's docstring), so there's no shared
+     in-process counter to just add up directly; before this, a full
+     pipeline run's log showed 2-3 separate "Total Claude API cost"
+     lines (one per stage that makes Claude calls), never one number for
+     the whole run. `db/db.py`'s `sum_llm_cost_since()` sums every
+     agent_runs row since a timestamp `run_pipeline.py` captures right
+     before running any stage, with no `agent_name` filter (unlike
+     `sum_llm_errors_since()`, which only cares about discovery/
+     categorize) -- a pipeline total should include every stage that
+     spent anything, `digest_source` included.
 4. Langfuse -- built and verified working against real Langfuse Cloud
    (not just written and assumed correct): every LLM call now shows up as
    its own trace with the full prompt/response, model, token usage, cost,

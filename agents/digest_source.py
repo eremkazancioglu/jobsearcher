@@ -288,6 +288,7 @@ async def main() -> None:
                 run.record_error(f"{external_id} ({listing.title}): {e}")
                 counts[listing.platform]["error"] += 1
         run.llm_errors = _total_llm_errors()
+        run.llm_cost_usd = _total_cost_usd()
 
     _log_summary(counts)
     logger.info("Run complete. Total Claude API cost: $%.4f", _total_cost_usd())

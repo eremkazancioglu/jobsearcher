@@ -208,6 +208,7 @@ async def main() -> None:
                 logger.exception("Failed to process posting %s -- skipping", adzuna.external_id)
                 run.record_error(f"{adzuna.external_id} ({adzuna.title}): {e}")
         run.llm_errors = get_llm_error_count()
+        run.llm_cost_usd = get_total_cost_usd()
 
     logger.info("Run complete. Total Claude API cost: $%.4f", get_total_cost_usd())
 
