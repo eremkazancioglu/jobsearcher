@@ -828,9 +828,10 @@ tracker -- see "Phase 3" below for why that's split out.
     reading as sound -- correctly flagging deal-breaker preference
     mismatches (location, employer size, PTO) even when the resume match
     is technically strong.
-  - **Uses the raw Anthropic SDK, not `claude_agent_sdk`** -- the one
-    deliberate exception in this project, where every other Claude call
-    goes through `claude_agent_sdk`. Measured directly on a real
+  - **Uses the raw Anthropic SDK, not `claude_agent_sdk`** -- originally
+    the one deliberate exception in this project; `fetchers.py` has since
+    moved to the raw SDK too (see Phase 4's "Moving Claude calls off the
+    agent-SDK harness"), so this is now simply how every call works. Measured directly on a real
     categorize call: the CLI harness `claude_agent_sdk` launches adds
     ~18,600 tokens of its own system prompt + built-in tool declarations
     to *every* call (billed as a 1.25x cache write each time, confirmed to
@@ -883,8 +884,8 @@ tracker -- see "Phase 3" below for why that's split out.
     or built as a separate script, since the underlying "digest, but
     empty" logic doesn't change, only whether an empty run says anything.
   - **Every digest also reports Claude API call failures since the last
-    digest** -- rate limits, an out-of-credits account, a hit
-    `max_budget_usd` cap, auth issues. Deliberately not "postings that
+    digest** -- rate limits, an out-of-credits account, a
+    `max_tokens` cutoff, auth issues. Deliberately not "postings that
     failed" (that's `record_error()`/`items_processed` vs. `items_new`,
     already visible in `agent_runs`) -- `fetchers.py`'s tiered capture and
     `capture()`'s graceful degrade mean a run can look completely healthy
@@ -898,9 +899,10 @@ tracker -- see "Phase 3" below for why that's split out.
       can't be the only place this is visible; `agent_runs` already isn't
       optional. `get_llm_error_count()` (a module-level counter, same
       pattern as `get_total_cost_usd()`) exists independently in both
-      `fetchers.py` (incremented on `message.is_error`, timeout, or
-      exception inside `_run_claude_json()` -- `message.is_error` is
-      specifically what a hit `max_budget_usd` cap surfaces as) and
+      `fetchers.py` (incremented on `anthropic.APIError`, timeout, a
+      `max_tokens` cutoff, or unparseable output inside
+      `_run_claude_json()`; originally this keyed off
+      `claude_agent_sdk`'s `message.is_error`) and
       `categorize.py` (incremented on `anthropic.APIError` specifically,
       not on a malformed-response `RuntimeError`, which is a different
       kind of failure). `AgentRunTracker` doesn't collect this itself
@@ -1782,27 +1784,21 @@ than new tools:
    its own trace with the full prompt/response, model, token usage, cost,
    and latency, not just the run-level summary `agent_runs` gives.
    `observability/tracing.py` is imported once by every module that makes
-   an LLM call and does two distinct things, because this project's LLM
-   calls take two distinct shapes:
+   an LLM call and does one thing now (it used to do two, for two call shapes):
    - `categorize.py` calls the raw Anthropic Python SDK directly --
      `opentelemetry-instrumentation-anthropic`'s `AnthropicInstrumentor`
      auto-captures every such call with zero changes needed at the call
      site itself, confirmed live (an `anthropic.chat` generation showed
      up in Langfuse with correct model/tokens/cost after nothing more
      than importing `observability.tracing`).
-   - `fetchers.py` calls go through `claude_agent_sdk`, which launches a
-     CLI subprocess rather than calling a Python Anthropic client object
-     -- OTel auto-instrumentation can't see inside a subprocess. Those
-     call sites (`_run_claude_json()`, fetchers.py's one shared helper)
-     log a **manual** generation instead, using
-     `langfuse.start_as_current_observation(as_type="generation", ...)`
-     and populating `usage_details`/`cost_details` straight from
-     `ResultMessage.usage`/`total_cost_usd` -- the SDK already computes
-     these; nothing here re-derives or estimates them. `capture()` itself
-     is wrapped in `@observe(name="capture_posting")` so a posting's
-     tier 1/2/3 attempts (each a separate generation when they make an
-     LLM call) nest under one trace per posting rather than showing up as
-     unrelated, hard-to-correlate spans.
+   - `fetchers.py` and `digest_search.py` also call the raw Anthropic SDK
+     now (they used to go through `claude_agent_sdk`, a CLI subprocess
+     OTel couldn't see into, which needed hand-written manual generations
+     built from `ResultMessage.usage`/`total_cost_usd`). Importing
+     `observability.tracing` auto-instruments them exactly like
+     `categorize.py`; no manual generation code remains. `capture()` is
+     still wrapped in `@observe(name="capture_posting")` so a posting's
+     calls nest under one trace.
    - Tracing is optional and degrades silently, same pattern as
      `SLACK_WEBHOOK_URL`: `LANGFUSE_PUBLIC_KEY` unset means `get_client()`
      still returns a usable (auto-disabled, no-op) client rather than
