@@ -234,7 +234,10 @@ there."
    - Try `redirect_url` directly.
    - If that fails — dead link, or a third-party portal that gates the
      real posting behind its own login (hackajob is a confirmed real
-     example of this) — fall back to a general web search for the
+     example of this) — *(no longer done for Adzuna: the fallback search
+     below was removed; on failure `capture()` logs a warning and keeps
+     Adzuna's snippet -- see the status note under "Full posting
+     capture")* fall back to a general web search for the
      company's own careers page using the job title, then use whatever
      that page offers (browse, its own search box, filtering) to locate
      the specific role, cross-checked against Adzuna's `description`
@@ -370,6 +373,27 @@ tier 1-3 capture flow below.
 
 ### 2. Full posting capture
 
+> **Status note -- tier 3 was removed from Adzuna capture; the LLM calls
+> here moved to the raw Anthropic SDK.** Everything below describing
+> "tier 3" (the fallback search, the candidate walk, confirm+extract) is
+> kept as the record of how this was designed and why, but it no longer
+> runs for Adzuna: `capture()` is tier 1/2 only, and when that finds no
+> usable `JobPosting` JSON-LD it logs a warning and keeps Adzuna's
+> snippet (`description_source = 'adzuna_snippet'`) -- no search, no LLM
+> calls. Reason: tier 1/2 already resolved nearly every Adzuna posting
+> (that's why Adzuna's Claude cost was near zero), so tier 3 almost never
+> ran, yet it was by far the most expensive and most code-heavy path to
+> keep. The candidate walk and confirm+extract judgment live on, now used
+> only by the digest source (Phase 4, `capture_from_search()`). Separately,
+> every LLM call in `fetchers.py` (confirm+extract, work-location
+> classification) now uses the raw Anthropic SDK instead of
+> `claude_agent_sdk`, which is no longer a dependency at all -- so the
+> harness-specific details below (`max_budget_usd`, `max_turns`, the
+> deferred-`WebSearch`-tool turn budget, the ~$0.03 per-call cache-write
+> overhead) describe the old path. See Phase 4's "Moving Claude calls off
+> the agent-SDK harness" for what replaced it and the measurements behind
+> it.
+
 Tier 3 is built as fetch tiers with an LLM doing the judgment calls, not
 hand-written parsing — hand-rolled HTML selectors or string-matching will
 break across the wide variety of *external* site structures tier 3 hits,
@@ -424,7 +448,7 @@ distinction holds and what was verified before relying on it.
   plain fetch's text is suspiciously short. A lot of modern career sites
   only populate the description via client-side JavaScript that a plain
   fetch never executes.
-- **Tier 3 — fallback search**, triggered when tiers 1–2 produce unusable
+- **Tier 3 — fallback search** *(removed for Adzuna, see the status note above; still the shape of the digest source's candidate walk)*, triggered when tiers 1–2 produce unusable
   text *or* when the page is clearly a login/paywall (e.g. a login form
   where content should be, an auth redirect, a "sign in to view" message —
   worth having the LLM judge this directly from the fetched content rather
@@ -511,7 +535,7 @@ distinction holds and what was verified before relying on it.
   that won't cooperate. Let the human glance at the original
   `redirect_url` themselves in the rare case it's worth it.
 
-**Cost controls on the LLM calls.** An early Phase 1 test run burned ~5% of
+**Cost controls on the LLM calls** *(historical -- describes the old agent-SDK, tier-3-for-Adzuna design; see the status note at the top of this section)***.** An early Phase 1 test run burned ~5% of
 a $25 API budget on a single posting before these existed -- tier 3's
 original design was a single multi-turn agentic loop doing search, browsing,
 fetching, and full-page-text reproduction all in one call, and left
@@ -1305,10 +1329,12 @@ platform class by name, so nothing else in this list needs to change to
 pick it up.
 
 `fetchers.py`'s tier 3 candidate walk was factored out into its own
-callable, `walk_candidates()`, specifically so it could be shared here
-without duplication -- both `capture()`'s tier 3 (Adzuna, candidates from
-`_web_search()`) and `capture_from_search()` (this source, candidates
-from `digest_search.search()`) call the same function. `PostingReference`
+callable, `walk_candidates()`, specifically so it could be shared without
+duplication -- originally between `capture()`'s tier 3 (Adzuna) and
+`capture_from_search()` (this source). Adzuna's tier 3 has since been
+removed (see below), so `capture_from_search()` is now the only caller;
+the function stays separate because it's still the right unit (and the
+retry budget lives there). `PostingReference`
 (a small dataclass of title/company/location/description) is what made
 this sharable: `_confirm_and_extract()` and `_try_confirmed_extraction()`
 were generalized from taking an `AdzunaResult` directly to taking a
@@ -1471,8 +1497,8 @@ changes address this, in order of expected impact:
    these) get one retry, on the theory that search ranking correlates
    with correctness so the earliest-ranked failure is the one most worth
    spending the retry on. `_run_claude_json`'s own `CLAUDE_RETRY_ATTEMPTS`
-   default (retry once) is unchanged and still applies to single-shot
-   callers (`_web_search`, `_classify_work_location`), where "per call"
+   default (retry once) is unchanged and still applies to the single-shot
+   caller (`_classify_work_location`), where "per call"
    and "per listing" are the same thing anyway -- only the candidate-walk
    path needed this distinction.
 
@@ -1483,6 +1509,104 @@ window) is genuinely handled by the "since last run" windowing already in
 place, so cutting frequency was judged unlikely to add much on top of
 what these three changes already do, at the cost of latency on new
 postings. Revisit if real cost data after these land still looks high.
+
+### Moving Claude calls off the agent-SDK harness, and removing Adzuna's tier 3
+
+Prompted by the daily Claude spend still looking like $1-2/day after the
+cost controls above. Measured one call of each shape on real pages rather
+than guessing (single runs, so read the numbers as approximate):
+
+| Call | Tokens | Cost |
+|---|---|---|
+| digest search (raw SDK + `web_search`) | 14,333 in / 475 out | about $0.027 (incl. the $0.01 flat search fee) |
+| confirm+extract via `claude_agent_sdk`, matched | 20,353 cache-write / 1,702 out | about $0.034 |
+| confirm+extract via `claude_agent_sdk`, rejected | 20,849 cache-write / 662 out | about $0.029 |
+| same prompt, raw SDK, matched | 2,031 in / 840 out | about $0.006 |
+| same prompt, raw SDK, rejected | 2,613 in / 125 out | about $0.003 |
+
+- **The fixed harness overhead was the cost, not the description echo.**
+  `claude_agent_sdk` launches the Claude Code CLI, which sends its own
+  system prompt and every built-in tool definition with each request:
+  about 20k tokens billed as a cache *write* (1.25x) on every call and
+  never reused (each `query()` is a fresh session) -- roughly 70-85% of
+  each call's cost, for tools confirm+extract never uses. It also enables
+  extended thinking by default (the 662 output tokens on a rejected call
+  with an empty description). The raw SDK sends only our own prompt.
+  All `fetchers.py` LLM calls (confirm+extract, work-location
+  classification) now use it, the same move `categorize.py` made earlier
+  for the same reason; `claude_agent_sdk` is no longer a dependency.
+  Trade-offs accepted: the per-call `max_budget_usd` cap is gone (bounded
+  by `max_tokens=8192` and the 18k-character input cap instead -- a single
+  call is now worth a cent or two at worst), and cost is computed locally
+  from `usage` (`agents/pricing.py`) since there's no pre-computed total.
+  Langfuse tracing got simpler: the calls are auto-instrumented now, with
+  no hand-written generations. The unexplained `Claude query returned an
+  error: None` failures and the `asyncgen aclose()` teardown error were
+  both harness-level and should disappear with it.
+- **Batching was considered and rejected.** Its only saving is amortizing
+  per-call fixed overhead, which is exactly the harness's cache write --
+  removing the harness captures that without batching's costs: putting
+  several candidates in one prompt gives up the stop-at-first-match early
+  exit and multiplies input tokens, and the Message Batches API (50% off,
+  async, raw SDK only) would shave about $0.003 off a call that now costs
+  $0.003-0.006, for a walk that's inherently sequential.
+- **No thinking, validated rather than assumed.** The worry was that the
+  harness's default thinking was doing real work on subtle same-posting
+  judgments. Checked against 16 cases with known right answers from earlier
+  logs and tests (11 were still fetchable and scorable; the other 5 were
+  expired pages or unlabeled): after the prompt fix below, 0
+  disagreements, including the GM Staff-vs-Manager trap (3/3 rejected)
+  and the other same-company different-role pages. Small sample and no
+  thinking budget -- worth re-checking if a class of wrong confirmations
+  shows up in real runs; a small thinking budget is the knob to try first.
+- **A real latent bug the validation surfaced, on both paths:** a generic
+  company listings page (which names the reference role among many) was
+  confirmed as "the same posting" on roughly half of repeated runs with the
+  original prompt -- the claude_agent_sdk path said "match" on it too, not
+  just the raw one (it had rejected the same page in an earlier CI log, so
+  it was noise either way). The prompt now states outright that a page
+  listing several openings, a search-results page, or a careers index is
+  not the posting unless it contains that role's own full job description;
+  that made it reject 4/4 without thinking (2/2 with).
+- **Output tokens: what was and wasn't worth cutting.** The search call
+  writes about 330 tokens of answer text that gets discarded; a low
+  `max_tokens` trims it (120 works, 60 returns zero results) but saves
+  only about $0.0015 of a $0.027 call and is brittle, so it's not done --
+  the real search cost is the $0.01 fee plus about $0.014 of input, the
+  results being fed back to the model. The description echo is about
+  $0.004, paid once per *matched* listing (rejected candidates return an
+  empty description) -- about a third of a matched listing's confirm+extract
+  spend once the harness is gone. Left as is: the model's version is
+  trimmed of page boilerplate (3.9k of 5.8k characters in the sample), which
+  is worth something downstream; pages with a `JobPosting` JSON-LD block
+  could skip the echo entirely by reusing `metadata_text` the way Adzuna's
+  tier 1/2 does, if it ever matters.
+- **Search fee was missing from the logged cost.** `digest_search.py`'s
+  tally counted tokens only, but `web_search` also charges a flat $10 per
+  1,000 searches on top -- about 37% of a search call. Logged digest
+  costs understated real spend by that much (plausibly part of any gap
+  between the log and the console). `agents/pricing.py` now includes it
+  (`usage.server_tool_use.web_search_requests`) and is the one place the
+  Haiku prices live, replacing per-module copies in `fetchers.py` and
+  `digest_search.py`.
+- **Adzuna's tier 3 is removed, not just rarely hit.** `capture()` is tier
+  1/2 only; when it finds no usable `JobPosting` JSON-LD it logs a warning
+  and keeps Adzuna's snippet (`description_source = 'adzuna_snippet'`, as
+  before) -- no fallback search, no candidate walk. The effect on
+  Adzuna: near-zero Claude cost stays near zero, and the remaining LLM
+  spend is just `_classify_work_location` for postings without the REMOTE
+  badge, now about $0.001 per call instead of $0.03-0.06.
+
+Estimated effect per digest listing (measured pieces, projected totals):
+matched at candidate #1 goes from about $0.063 to about $0.033; a
+10-candidate miss from about $0.39 to about $0.06. The search call
+($0.027) is now the largest fixed per-listing cost -- which reopens the
+Brave Search API idea rejected earlier, for a reason that didn't exist
+then: at about $0.005 per query with no tokens at all, it would cut that
+line by roughly 80%, and the earlier side-by-side already showed
+near-identical result quality with only `linkedin.com` excluded. Not done
+yet; the earlier argument that search wasn't the expensive part only held
+while the harness dominated.
 
 ---
 
@@ -1752,16 +1876,15 @@ recoverable from git history, not gone.
 
 Needed from Phase 1:
 - Python throughout.
-- Claude Agent SDK (`claude-agent-sdk`) for the LLM-driven judgment calls
-  in `fetchers.py` (capture confirmation/extraction, tier 3's search) --
-  verify current `query()` / `ClaudeAgentOptions` API and the
-  `mcp_servers` config shape against the live docs when implementing; this
-  evolves and shouldn't be assumed from memory. See "Cost controls on the
-  LLM calls" in Phase 1 -- Haiku, a per-call budget cap, and a turn limit
-  are not optional extras, they're load-bearing for this being affordable
-  to run at all. **Not** used by `categorize.py` (Phase 2) -- see its raw
-  Anthropic SDK note under "Fit categorization" above for why that one
-  call is the deliberate exception.
+- Anthropic Python SDK (`anthropic`), raw, for every LLM call: confirm+
+  extract and work-location classification in `fetchers.py`,
+  `categorize.py`, and `digest_search.py`'s `web_search` call.
+  `claude-agent-sdk` was used for the `fetchers.py` calls originally and
+  has been removed as a dependency -- see "Fit categorization" and Phase
+  4's "Moving Claude calls off the agent-SDK harness" for why (its CLI
+  harness added ~20k tokens of fixed overhead to every call). Haiku for
+  all of them; `agents/pricing.py` holds the per-token prices and
+  computes cost from each response's `usage`.
 - A custom MCP server (FastMCP) exposing Adzuna search as a tool. No
   dedicated ATS lookup tools -- see Phase 1 for why.
 - `requests` (or `httpx`) for the Adzuna calls.

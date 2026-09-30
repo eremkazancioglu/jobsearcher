@@ -41,9 +41,9 @@ from models.schema import Posting
 
 logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
 logger = logging.getLogger(__name__)
-# Quiet claude_agent_sdk's own INFO-level noise (e.g. "Using bundled Claude
-# Code CLI: ...") -- not useful at our log level, drowns out our own logs.
-logging.getLogger("claude_agent_sdk").setLevel(logging.WARNING)
+# The anthropic client logs one INFO line per request ("HTTP Request: POST ... 200 OK")
+# -- not useful at our log level, drowns out our own logs.
+logging.getLogger("httpx2").setLevel(logging.WARNING)
 
 SOURCE = "adzuna"
 

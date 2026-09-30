@@ -23,7 +23,7 @@ run.
 
 Every digest also reports how many Claude API calls (discovery/categorize,
 since the previous digest) failed outright -- rate limits, an
-out-of-credits account, a hit max_budget_usd cap, auth issues. This is
+out-of-credits account, a max_tokens cutoff, auth issues. This is
 deliberately separate from whether postings got processed: fetchers.py's
 tiered capture degrades gracefully around individual call failures, so a
 run can look completely fine ("N new matches!") while calls are actually

@@ -48,7 +48,9 @@ from models.schema import Posting
 
 logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
 logger = logging.getLogger(__name__)
-logging.getLogger("claude_agent_sdk").setLevel(logging.WARNING)
+# The anthropic client logs one INFO line per request ("HTTP Request: POST ... 200 OK")
+# -- not useful at our log level, drowns out our own logs.
+logging.getLogger("httpx2").setLevel(logging.WARNING)
 
 SOURCE = "email_digest"
 AGENT_NAME = "digest_source"
@@ -90,10 +92,8 @@ NON_EMPLOYER_COMPANIES = {
 
 def _total_cost_usd() -> float:
     """Sums fetchers.py's counter (capture_from_search's confirm+extract
-    calls, via claude_agent_sdk) and digest_search.py's counter (the
-    search call, via the raw Anthropic SDK) -- two different Claude
-    clients, same reasoning categorize.py's independent counter already
-    established for this project."""
+    calls) and digest_search.py's counter (the web_search call) -- each
+    module keeps its own in-process tally."""
     return fetchers_cost_usd() + digest_search.get_total_cost_usd()
 
 

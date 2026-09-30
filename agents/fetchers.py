@@ -1,31 +1,32 @@
-"""Tier 1/2/3 full-posting capture. Tier 1/2 is deterministic (no LLM call);
-tier 3 uses LLM confirm/extract judgment calls.
+"""Full-posting capture: the Adzuna tier 1/2 path, plus the shared
+candidate walk and confirm+extract judgment used by agents/digest_source.py.
 
-Given an Adzuna search result (a title, company, location, description
-snippet, and a redirect_url), try to recover the full job posting:
+capture() (Adzuna): given a search result (title, company, location,
+snippet, redirect_url), recover the full posting with no LLM judgment:
 
     Tier 1 -- plain fetch of redirect_url.
     Tier 2 -- headless render of redirect_url, if tier 1's text is too short.
-    Tier 3 -- a single general web search for "{title} {company}", then the
-              same tiered fetch walked over each result URL in order, until
-              one passes confirmation.
 
-Tier 1/2 needs no LLM judgment: redirect_url (after normalization) is
-Adzuna's own /details/{id} page, which embeds a JobPosting JSON-LD block
-with a clean description -- its presence is used directly, its absence is
-itself the "not a valid live posting" signal (confirmed more reliable in
-practice than judging visible text). Tier 3 candidates are genuinely
-uncertain both in identity and in structure (arbitrary external sites), so
-each one is judged by an LLM for (a) whether it's actually showing content
-(not a login/paywall) and (b) whether it's the same posting Adzuna
-described, before its text is trusted for extraction. If nothing works,
-capture() degrades gracefully and keeps Adzuna's snippet -- see CLAUDE.md's
-"Full posting capture" section for the full rationale.
+redirect_url (after normalization) is Adzuna's own /details/{id} page, which
+embeds a JobPosting JSON-LD block with a clean description -- its presence
+is used directly, its absence is itself the "not a valid live posting"
+signal (confirmed more reliable in practice than judging visible text). If
+that fails, capture() logs it and keeps Adzuna's snippet. There is no longer
+a tier 3 (search + candidate walk) for Adzuna: tier 1/2 resolves nearly
+every posting, so it almost never ran and was the most expensive path.
 
-This flow is kept independent of the Adzuna call that produced the result:
-it's handed plain facts (company, title, location, snippet) and
-independently looks for a public posting, never touching Adzuna's
-redirect_url as anything other than "a URL to fetch."
+capture_from_search() / walk_candidates() (digest source): candidates come
+from a caller's own search, each is fetched through the same tiered fetch
+and judged by a confirm+extract LLM call for (a) whether it's actually
+showing content (not a login/paywall) and (b) whether it's the same posting
+as the reference, before its text is trusted. No LLM is involved unless a
+candidate page has a usable amount of text.
+
+All LLM calls here go through the raw Anthropic SDK (not claude_agent_sdk):
+they're single-shot structured-output calls with no tools, and the agent
+SDK's CLI harness added a ~20k-token system prompt + tool-definition cache
+write to every one of them (about 70-85% of each call's cost, measured).
+See CLAUDE.md's "Cost controls" sections.
 """
 
 import asyncio
@@ -36,38 +37,47 @@ from dataclasses import dataclass
 from decimal import Decimal
 from typing import Any, Optional
 
+import anthropic
 import requests
 import trafilatura
 from bs4 import BeautifulSoup
-from claude_agent_sdk import ClaudeAgentOptions, ResultMessage, query
 from playwright.async_api import async_playwright
 
+from agents.pricing import usage_cost_usd
 from models.schema import AdzunaResult, DescriptionSource
-from observability.tracing import langfuse
 from langfuse import observe
+
+# Import side effect: instruments the raw Anthropic client below for Langfuse
+# tracing (AnthropicInstrumentor) -- see observability/tracing.py.
+import observability.tracing  # noqa: F401
 
 logger = logging.getLogger(__name__)
 
 MIN_USABLE_CHARS = 500
 FETCH_TIMEOUT_S = 15
 RENDER_TIMEOUT_MS = 20_000
-# How many tier 3 search-result URLs to walk (in order) before giving up --
+# How many search-result URLs to walk (in order) before giving up --
 # each candidate costs a fetch (+ maybe a render) and, if usable-length, a
 # confirm call, so this is a cost/thoroughness tradeoff, not just a
-# thoroughness one. Confirmed in practice that the WebSearch tool's ranking
-# can differ meaningfully from a plain Google search -- the actual company
+# thoroughness one. Confirmed in practice that a search tool's ranking can
+# differ meaningfully from a plain Google search -- the actual company
 # posting has landed as low as position 8 of 9 results for an exact
 # "{title} {company}" query that ranked it #1 on Google. 10 effectively
 # walks everything the tool tends to return rather than cutting off early.
 MAX_FALLBACK_CANDIDATES = 10
 
-# Confirm/extract/search are all narrow judgment/lookup tasks, not deep
-# reasoning -- Haiku is plenty, and vastly cheaper than the CLI's default
-# model.
+# Confirm/extract and work-location classification are narrow judgment
+# tasks, not deep reasoning -- Haiku is plenty. Thinking is left off (the
+# raw SDK doesn't enable it unless asked); validated against known
+# accept/reject cases before switching, see CLAUDE.md.
 CLAUDE_MODEL = "claude-haiku-4-5-20251001"
-# Hard per-call ceiling so one runaway call can't blow through real money.
-CLAUDE_MAX_BUDGET_USD = 0.15
+# Bounds worst-case output per call (the confirm+extract schema echoes the
+# job description back, capped at ~18k input characters) -- replaces the
+# per-call max_budget_usd cap claude_agent_sdk offered, which has no raw-SDK
+# equivalent.
+CLAUDE_MAX_TOKENS = 8192
 CLAUDE_QUERY_TIMEOUT_S = 120
+_client = anthropic.AsyncAnthropic(timeout=CLAUDE_QUERY_TIMEOUT_S)
 USER_AGENT = (
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
     "(KHTML, like Gecko) Chrome/120.0 Safari/537.36"
@@ -143,20 +153,6 @@ WORK_LOCATION_SCHEMA = {
     "additionalProperties": False,
 }
 
-SEARCH_SCHEMA = {
-    "type": "object",
-    "properties": {
-        "urls": {
-            "type": "array",
-            "items": {"type": "string"},
-            "description": "result URLs from the search, in ranking order",
-        },
-    },
-    "required": ["urls"],
-    "additionalProperties": False,
-}
-
-
 @dataclass
 class CaptureResult:
     description: str
@@ -171,8 +167,8 @@ class CaptureResult:
 @dataclass
 class PostingReference:
     """The plain facts _confirm_and_extract() judges a candidate page
-    against -- factored out of AdzunaResult so tier 3's candidate walk can
-    be shared with sources that aren't Adzuna (e.g. agents/digest_source.py,
+    against -- factored out of AdzunaResult so the candidate walk can be
+    shared with sources that aren't Adzuna (e.g. agents/digest_source.py,
     which only ever has title/company, no snippet or location)."""
     title: str
     company: str
@@ -218,16 +214,17 @@ class PageFetch:
 _total_cost_usd = 0.0
 
 
-def _record_cost(message: ResultMessage) -> None:
+def _record_cost(usage) -> None:
     global _total_cost_usd
-    if message.total_cost_usd:
-        _total_cost_usd += message.total_cost_usd
+    _total_cost_usd += usage_cost_usd(usage)
 
 
 def get_total_cost_usd() -> float:
     """Cumulative USD cost of every Claude call made in this process so
-    far (confirm/extract/tier 3 search), across all postings -- callers
-    (e.g. discovery.py) log this at the end of a run."""
+    far (confirm+extract, work-location classification), across all
+    postings -- callers (e.g. discovery.py) log this at the end of a run.
+    Computed locally from each response's usage block (agents/pricing.py),
+    since the raw SDK doesn't return a pre-computed total."""
     return _total_cost_usd
 
 
@@ -246,15 +243,13 @@ def _record_llm_error() -> None:
 
 def get_llm_error_count() -> int:
     """Cumulative count of Claude calls that failed outright this process
-    -- timeouts, exceptions, and message.is_error results (which is what
-    a hit max_budget_usd cap, an out-of-credits account, or a rate limit
-    surfaces as via claude_agent_sdk). Distinct from a posting merely
-    falling through to a lower capture tier or the Adzuna snippet, which
-    is normal, expected degradation, not an error -- this counts actual
-    call failures specifically, so infrastructure problems (billing,
-    credits, rate limits) are visible even when the pipeline otherwise
-    degrades gracefully around them and every posting still gets *some*
-    result."""
+    -- anthropic.APIError (rate limit, out-of-credits, auth, connection,
+    timeout) or an unparseable/truncated response. Distinct from a
+    posting merely degrading to the Adzuna snippet or a candidate being
+    legitimately rejected, which is normal, expected behavior, not an
+    error -- this counts actual call failures specifically, so
+    infrastructure problems (billing, credits, rate limits) are visible
+    even when the pipeline otherwise degrades gracefully around them."""
     return _llm_error_count
 
 
@@ -263,33 +258,20 @@ def reset_llm_error_count() -> None:
     _llm_error_count = 0
 
 
-# Known-noise line the CLI prints on every subprocess launch when the
-# machine has a claude.ai OAuth login alongside our ANTHROPIC_API_KEY --
-# accurate but irrelevant here, since these calls always use the API key.
-_NOISY_STDERR_SUBSTRINGS = ("claude.ai connectors are disabled",)
-
-
-def _handle_claude_cli_stderr(line: str) -> None:
-    if any(s in line for s in _NOISY_STDERR_SUBSTRINGS):
-        return
-    logger.debug("claude CLI stderr: %s", line)
-
-
 # A candidate that's actually the right posting can otherwise be lost to a
-# single unexplained failure (message.is_error with no reason given, a
-# timeout, a dropped connection) with no way to distinguish it from a
-# genuine rejection -- confirmed in practice on a real run: the correct
-# candidate was the very first one walked, its confirm+extract call failed
-# outright with no error detail, and every remaining candidate was either
-# wrong or unfetchable, so the whole item got skipped for a reason that
-# had nothing to do with whether it was a match. This mirrors Adzuna's own
-# retry-on-5xx in mcp_servers/job_sources/server.py, same reasoning: a
-# transient failure is worth a retry, but repeating indefinitely would
-# just burn budget against a real, persistent problem (a hit
-# max_budget_usd cap won't clear on retry either).
+# single unexplained failure (a timeout, a dropped connection, a truncated
+# response) with no way to distinguish it from a genuine rejection --
+# confirmed in practice on a real run: the correct candidate was the very
+# first one walked, its confirm+extract call failed outright with no error
+# detail, and every remaining candidate was either wrong or unfetchable,
+# so the whole item got skipped for a reason that had nothing to do with
+# whether it was a match. A transient failure is worth a retry, but
+# repeating indefinitely would just burn budget against a real, persistent
+# problem. (The anthropic client also retries connection errors/429/5xx
+# itself, 2x by default, below this.)
 #
-# This constant is the default for single-shot callers (_web_search,
-# _classify_work_location), where one call is the whole listing's spend on
+# This constant is the default for single-shot callers
+# (_classify_work_location), where one call is the whole listing's spend on
 # that call anyway. It is NOT what bounds retries inside a candidate walk
 # -- confirmed real cost risk if it were: a walk can attempt up to
 # MAX_FALLBACK_CANDIDATES calls, and retrying every one of them
@@ -305,24 +287,17 @@ async def _run_claude_json(
     prompt: str,
     schema: dict,
     *,
-    allowed_tools: Optional[list[str]] = None,
-    permission_mode: Optional[str] = None,
-    max_turns: int = 1,
-    trace_name: str = "claude_agent_sdk_call",
     max_attempts: int = CLAUDE_RETRY_ATTEMPTS,
 ) -> Optional[dict]:
-    """max_attempts defaults to CLAUDE_RETRY_ATTEMPTS (retry once) for
-    single-shot callers (_web_search, _classify_work_location), where
-    "per call" and "per listing" are the same thing anyway. Callers inside
-    a candidate walk (_try_confirmed_extraction, via _confirm_and_extract)
-    pass max_attempts=1 here and manage their own single retry budget for
-    the whole walk instead -- see walk_candidates()."""
+    """Single-shot structured-output call; None on failure. max_attempts
+    defaults to CLAUDE_RETRY_ATTEMPTS (retry once) for single-shot callers
+    (_classify_work_location), where "per call" and "per listing" are the
+    same thing anyway. Callers inside a candidate walk
+    (_try_confirmed_extraction, via _confirm_and_extract) pass
+    max_attempts=1 here and manage their own single retry budget for the
+    whole walk instead -- see walk_candidates()."""
     for attempt in range(1, max_attempts + 1):
-        result = await _run_claude_json_once(
-            prompt, schema,
-            allowed_tools=allowed_tools, permission_mode=permission_mode,
-            max_turns=max_turns, trace_name=trace_name,
-        )
+        result = await _run_claude_json_once(prompt, schema)
         if result is not None:
             return result
         if attempt < max_attempts:
@@ -331,82 +306,34 @@ async def _run_claude_json(
     return None
 
 
-async def _run_claude_json_once(
-    prompt: str,
-    schema: dict,
-    *,
-    allowed_tools: Optional[list[str]] = None,
-    permission_mode: Optional[str] = None,
-    max_turns: int = 1,
-    trace_name: str = "claude_agent_sdk_call",
-) -> Optional[dict]:
-    options = ClaudeAgentOptions(
-        output_format={"type": "json_schema", "schema": schema},
-        allowed_tools=allowed_tools or [],
-        permission_mode=permission_mode,
-        max_turns=max_turns,
-        model=CLAUDE_MODEL,
-        max_budget_usd=CLAUDE_MAX_BUDGET_USD,
-        # SDK isolation mode: these are narrow, stateless judgment calls,
-        # not an interactive session -- they shouldn't depend on (or be
-        # affected by) the user's global ~/.claude/settings.json or a
-        # project CLAUDE.md.
-        setting_sources=[],
-        # The CLI's "claude.ai connectors are disabled..." notice is
-        # printed directly to the subprocess's stderr, not through Python
-        # logging -- setting_sources doesn't touch it (confirmed: still
-        # printed with setting_sources=[]), since it's about detected
-        # account-level OAuth state, not settings files. Route stderr
-        # through our own logger instead of letting it print straight to
-        # the terminal, filtering out just this one known-noise line.
-        stderr=_handle_claude_cli_stderr,
-    )
-
-    # Manual generation, not auto-instrumentation: claude_agent_sdk launches
-    # a CLI subprocess rather than calling a Python Anthropic client object,
-    # so OTel's AnthropicInstrumentor (used for categorize.py's raw SDK
-    # calls) can't see inside it -- see observability/tracing.py. usage/cost
-    # come straight from ResultMessage, which the SDK already computes; not
-    # re-derived or estimated here.
-    async def _run(generation) -> Optional[dict]:
-        async for message in query(prompt=prompt, options=options):
-            if isinstance(message, ResultMessage):
-                _record_cost(message)
-                generation.update(
-                    output=message.structured_output,
-                    usage_details=dict(message.usage) if message.usage else None,
-                    cost_details={"total_cost": message.total_cost_usd} if message.total_cost_usd else None,
-                )
-                if message.is_error:
-                    # Log level demoted to info -- every call site already
-                    # logs a more specific follow-up for the graceful
-                    # degrade (e.g. "Confirm+extract call failed for %s").
-                    # But this is exactly the case get_llm_error_count()
-                    # exists for: a hit max_budget_usd cap, an
-                    # out-of-credits account, or a rate limit all surface
-                    # as message.is_error here -- worth counting even
-                    # though it's handled gracefully in the moment.
-                    logger.info("Claude query returned an error: %s", message.result)
-                    _record_llm_error()
-                    return None
-                return message.structured_output
+async def _run_claude_json_once(prompt: str, schema: dict) -> Optional[dict]:
+    # Raw Anthropic SDK, structured output via output_config, no tools and
+    # no thinking. Langfuse tracing is automatic (AnthropicInstrumentor, via
+    # the observability.tracing import above) -- nothing to log by hand.
+    try:
+        response = await _client.messages.create(
+            model=CLAUDE_MODEL,
+            max_tokens=CLAUDE_MAX_TOKENS,
+            messages=[{"role": "user", "content": prompt}],
+            output_config={"format": {"type": "json_schema", "schema": schema}},
+        )
+    except anthropic.APIError as e:
+        logger.info("Claude call failed: %s: %s", type(e).__name__, e)
+        _record_llm_error()
         return None
+    _record_cost(response.usage)
 
-    with langfuse.start_as_current_observation(
-        as_type="generation", name=trace_name, model=CLAUDE_MODEL, input=prompt,
-    ) as generation:
-        try:
-            return await asyncio.wait_for(_run(generation), timeout=CLAUDE_QUERY_TIMEOUT_S)
-        except asyncio.TimeoutError:
-            logger.warning("Claude query timed out after %ss", CLAUDE_QUERY_TIMEOUT_S)
-            generation.update(level="ERROR", status_message="timeout")
-            _record_llm_error()
-            return None
-        except Exception:
-            logger.exception("Claude query failed")
-            generation.update(level="ERROR", status_message="exception")
-            _record_llm_error()
-            return None
+    text = next((b.text for b in response.content if b.type == "text"), None)
+    if response.stop_reason == "max_tokens" or text is None:
+        logger.info("Claude response unusable (stop_reason=%s)", response.stop_reason)
+        _record_llm_error()
+        return None
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError:
+        logger.info("Claude response was not valid JSON")
+        _record_llm_error()
+        return None
 
 
 def _fetch_plain(url: str) -> Optional[PageFetch]:
@@ -455,19 +382,19 @@ def _normalize_redirect_url(url: str) -> str:
     """Adzuna's own /land/ad/{id} landing page has bot-protection that
     blocks both plain fetch (403) and headless render ("Access Denied") --
     confirmed in practice, including on postings where tier 1/2 would
-    otherwise have to fall through to tier 3's full search. Its /details/{id}
+    otherwise have nothing usable to fetch. Its /details/{id}
     page serves the same JD directly with no such gate -- also confirmed in
     practice, on multiple postings, using the exact query string Adzuna's
     own API returned (not a separately-generated one). Swap to it when the
-    pattern matches; any other URL (including every tier 3 candidate, which
-    is never adzuna.com) passes through unchanged."""
+    pattern matches; any other URL (including every digest-source candidate,
+    which is never adzuna.com) passes through unchanged."""
     return ADZUNA_LAND_AD_RE.sub(r"\1/details/\2", url, count=1)
 
 
 async def _fetch_tiered(url: str) -> Optional[PageFetch]:
     """Tier 1 (plain fetch), escalating to tier 2 (headless render) if the
-    result looks too thin. Used for both the primary redirect_url and each
-    tier 3 search-result candidate -- one fetch pipeline, not two."""
+    result looks too thin. Used for both Adzuna's redirect_url and each
+    digest-source search-result candidate -- one fetch pipeline, not two."""
     page = _fetch_plain(url)
     if not _is_usable_length(page.text if page else None):
         logger.info(
@@ -633,14 +560,26 @@ async def _confirm_and_extract(
     title, since the body text never said either role name and the
     reference had no location/snippet to cross-check against (a source
     with only title+company, like agents/digest_source.py -- see
-    CLAUDE.md's Phase 4 section)."""
+    CLAUDE.md's Phase 4 section).
+
+    The "listing page is not the posting" sentence in the prompt was added
+    after testing the raw-SDK switch: with the original wording, a generic
+    company listings page (which names the reference role among many) was
+    confirmed as the posting on about half of repeated runs -- on the
+    claude_agent_sdk path too, not just the raw one. Stating it outright
+    made it reject consistently (4/4), with no thinking needed."""
     prompt = (
         "Judge the page text below against this reference job posting, "
         "then extract from it if -- and only if -- it's a genuine match.\n\n"
         "First, judge whether the page is (a) actually showing content "
         "(not a login wall, paywall, or bot-block) and (b) describing the "
         "same specific job posting as the reference, not just a company's "
-        "careers page in general. Treat the page's own <title> tag (given "
+        "careers page in general. A page that lists several job openings, a "
+        "search-results page, or a company careers index is NOT the posting "
+        "itself, even if the reference role appears in the list -- only treat "
+        "the page as the same posting if it contains that role's own full job "
+        "description (responsibilities, requirements), not just its title or a "
+        "link to it. Treat the page's own <title> tag (given "
         "below, separate from the page text) as a strong signal: if it "
         "names a substantially different role or seniority level than the "
         "reference title (e.g. \"Staff Engineer\" vs \"Manager\", "
@@ -663,7 +602,7 @@ async def _confirm_and_extract(
         f"Page text:\n{text[:18000]}"
     )
     return await _run_claude_json(
-        prompt, CONFIRM_AND_EXTRACT_SCHEMA, trace_name="confirm_and_extract", max_attempts=max_attempts
+        prompt, CONFIRM_AND_EXTRACT_SCHEMA, max_attempts=max_attempts
     )
 
 
@@ -674,8 +613,8 @@ def _normalize_work_location(value: Any) -> Optional[str]:
 async def _classify_work_location(text: str) -> Optional[str]:
     """Minimal, output-bounded LLM call: classify remote/hybrid/onsite from
     JD text alone, nothing else. Output is a single enum word, so cost
-    stays low even though it's a real LLM call -- unlike the rest of tier
-    1/2, which makes none at all (see capture()'s tier 1/2 block). Only
+    stays low even though it's a real LLM call -- unlike the rest of
+    capture(), which makes none at all. Only
     invoked when the deterministic REMOTE badge (_detect_remote_badge)
     didn't already answer this -- calling it unconditionally would mean
     paying for a judgment the badge already gave for free."""
@@ -686,41 +625,8 @@ async def _classify_work_location(text: str) -> Optional[str]:
         "way -- don't guess.\n\n"
         f"Job description:\n{text[:8000]}"
     )
-    result = await _run_claude_json(prompt, WORK_LOCATION_SCHEMA, trace_name="classify_work_location")
+    result = await _run_claude_json(prompt, WORK_LOCATION_SCHEMA)
     return _normalize_work_location(result.get("work_location")) if result else None
-
-
-async def _web_search(query_text: str) -> list[str]:
-    """A single, plain web search -- the same kind of query a person would
-    type in by hand. Mechanical retrieval, not a judgment call, so this is
-    a single tool call with no browsing/fetching/evaluating: it reports the
-    result URLs and stops. The judgment of whether any given result is
-    actually the right posting is _confirm_and_extract()'s job, applied
-    per-candidate in capture(), not duplicated here."""
-    prompt = (
-        "Run exactly one web search for the query below and report back the "
-        "result URLs, in ranking order. Do not fetch, browse, open, or "
-        "evaluate any of the pages -- just report the URLs the search "
-        "results already give you.\n\n"
-        f"Query: {query_text}"
-    )
-    result = await _run_claude_json(
-        prompt,
-        SEARCH_SCHEMA,
-        allowed_tools=["WebSearch"],
-        permission_mode="bypassPermissions",
-        # WebSearch is a deferred tool in this harness -- the model must
-        # call ToolSearch to fetch its schema before it can invoke it, which
-        # eats a turn on top of the search call itself and the final
-        # structured-output call. 3 left zero margin and silently truncated
-        # mid-call; give it real headroom.
-        max_turns=6,
-        trace_name="tier3_web_search",
-    )
-    if not result:
-        logger.info("Web search call failed or returned nothing for %r", query_text)
-        return []
-    return [url for url in result.get("urls", []) if isinstance(url, str)]
 
 
 @dataclass
@@ -741,10 +647,11 @@ async def _try_confirmed_extraction(
     page_title: Optional[str] = None,
     max_attempts: int = 1,
 ) -> ConfirmResult:
-    """Confirm identity and extract in one call. Used for tier 3 candidates
-    only -- external pages (search results or a company's careers site)
-    whose identity is genuinely uncertain, unlike tier 1/2's primary URL,
-    which is handled deterministically in capture() (see there for why).
+    """Confirm identity and extract in one call. Used for search-result
+    candidates only -- external pages (search results or a company's
+    careers site) whose identity is genuinely uncertain, unlike Adzuna's
+    primary URL, which is handled deterministically in capture() (see there
+    for why).
     ConfirmResult.extraction is the result dict (usable directly as an
     extraction -- full_description/salary_* fields) or None if the text
     was too short, the call failed, or the page was rejected as gated /
@@ -781,11 +688,10 @@ async def walk_candidates(
     candidate_urls: list[str], reference: PostingReference
 ) -> Optional[CandidateMatch]:
     """Fetch each candidate URL in order through the tiered fetch, running
-    confirm+extract on each, stopping at the first that passes. Shared by
-    capture()'s tier 3 (Adzuna's own WebSearch-sourced candidates) and
-    agents/digest_source.py's candidates -- same walk, different origin
-    for the candidate list. Caller is responsible for capping
-    candidate_urls to MAX_FALLBACK_CANDIDATES before calling.
+    confirm+extract on each, stopping at the first that passes. Used by
+    capture_from_search() (agents/digest_source.py's candidates). Caller is
+    responsible for capping candidate_urls to MAX_FALLBACK_CANDIDATES
+    before calling.
 
     One retry budget for the *whole* walk, not one per candidate -- see
     CLAUDE_RETRY_ATTEMPTS's comment for why per-candidate retries were
@@ -833,10 +739,10 @@ async def walk_candidates(
 def _parse_salary_from_extraction(
     extraction: dict, title: str
 ) -> tuple[Optional[Decimal], Optional[Decimal], Optional[bool]]:
-    """Shared by capture() and capture_from_search() -- extraction's
-    salary_found/salary_min/salary_max fields only ever come from tier 3's
-    confirm+extract call, never tier 1/2 (see "Salary detection is tier
-    3-only" in CLAUDE.md), so this is the same parsing either way."""
+    """Parses confirm+extract's salary_found/salary_min/salary_max fields.
+    Only capture_from_search() gets these -- Adzuna's own page has no
+    independent salary to check against Adzuna's fields (see "Salary
+    detection" in CLAUDE.md)."""
     if not extraction.get("salary_found"):
         return None, None, None
     try:
@@ -851,13 +757,22 @@ def _parse_salary_from_extraction(
 
 @observe(name="capture_posting")
 async def capture(adzuna: AdzunaResult) -> CaptureResult:
-    """Best-effort full posting capture. Always returns a result -- degrades
-    to Adzuna's snippet rather than raising when nothing works."""
+    """Best-effort full posting capture for an Adzuna result. Always returns
+    a result -- degrades to Adzuna's snippet rather than raising.
 
-    extraction = None
-    description_source: DescriptionSource = "adzuna_snippet"
-    url = adzuna.redirect_url
-    remote_badge: Optional[bool] = None
+    Tier 1/2 only. Adzuna's own /details/{id} page (after URL
+    normalization) embeds a JobPosting JSON-LD block with a clean,
+    already-isolated description; its presence is the validity gate and its
+    absence means the listing expired or the page isn't the real posting --
+    confirmed more reliable in practice than judging visible text. There is
+    deliberately no tier 3 here anymore: the old search-and-walk fallback
+    (a web search plus up to 10 confirm+extract calls per posting) was
+    removed because tier 1/2 resolves nearly every Adzuna posting, so it
+    almost never ran and was the most expensive code path to keep. When
+    tier 1/2 does fail, this logs a warning and keeps Adzuna's snippet
+    (description_source='adzuna_snippet') -- the human can open the original
+    redirect_url. See CLAUDE.md's Phase 1 capture section.
+    """
     normalized_url = _normalize_redirect_url(adzuna.redirect_url)
     if normalized_url != adzuna.redirect_url:
         logger.info(
@@ -866,113 +781,51 @@ async def capture(adzuna: AdzunaResult) -> CaptureResult:
         )
 
     logger.info("Tier 1/2: trying %s -> %s", adzuna.title, normalized_url)
+    page: Optional[PageFetch] = None
     try:
         page = await _fetch_tiered(normalized_url)
-        # Deterministic, not LLM-judged: Adzuna's own /details/{id} page
-        # embeds a JobPosting JSON-LD block with a clean, isolated JD
-        # description (_extract_metadata_text() already pulls this out as
-        # page.metadata_text). Its presence is the validity gate -- no
-        # separate "is this gated/the right posting" judgment call needed,
-        # since this page is served directly by this exact posting's own
-        # ID, not a third-party page that could show something else.
-        # Confirmed in practice that absence is itself a reliable "this
-        # isn't a valid live posting" signal: on a listing that expired
-        # since it was first captured, the visible page still looked
-        # plausible, but the JobPosting node was gone -- a more reliable
-        # gate than judging visible text would have been.
-        if page and _is_usable_length(page.metadata_text):
-            extraction = {"full_description": page.metadata_text}
-            description_source = "redirect_url"
-            url = normalized_url
-            remote_badge = page.remote_badge
-            logger.info(
-                "Tier 1/2: deterministic JD from JobPosting JSON-LD for %s (%d chars)",
-                adzuna.title, len(page.metadata_text),
-            )
-        else:
-            logger.info(
-                "Tier 1/2: no usable JobPosting JSON-LD for %s -- falling through to tier 3",
-                adzuna.title,
-            )
     except Exception:
         logger.exception("Tier 1/2 capture failed for %s", normalized_url)
 
-    reference = PostingReference(
-        title=adzuna.title, company=adzuna.company, location=adzuna.location,
-        description=adzuna.description,
+    if page is None or not _is_usable_length(page.metadata_text):
+        logger.warning(
+            "Tier 1/2 found no usable JobPosting JSON-LD for %s at %s (%s) -- "
+            "keeping Adzuna's snippet, no fallback search",
+            adzuna.title, adzuna.company, adzuna.redirect_url,
+        )
+        return CaptureResult(
+            description=adzuna.description or "",
+            description_source="adzuna_snippet",
+            url=adzuna.redirect_url,
+            salary_min=adzuna.salary_min,
+            salary_max=adzuna.salary_max,
+            salary_is_predicted=adzuna.salary_is_predicted,
+            work_location=None,
+        )
+
+    logger.info(
+        "Tier 1/2: deterministic JD from JobPosting JSON-LD for %s (%d chars)",
+        adzuna.title, len(page.metadata_text),
     )
-
-    if extraction is None:
-        try:
-            search_query = f"{adzuna.title} {adzuna.company}"
-            candidate_urls = await _web_search(search_query)
-            walked_urls = candidate_urls[:MAX_FALLBACK_CANDIDATES]
-            logger.info(
-                "Tier 3: searched %r for %s, got %d result(s), walking %d: %s",
-                search_query, adzuna.title, len(candidate_urls), len(walked_urls),
-                walked_urls,
-            )
-            if len(candidate_urls) > MAX_FALLBACK_CANDIDATES:
-                logger.info(
-                    "Tier 3: %d result(s) beyond the cap were not walked: %s",
-                    len(candidate_urls) - MAX_FALLBACK_CANDIDATES,
-                    candidate_urls[MAX_FALLBACK_CANDIDATES:],
-                )
-            match = await walk_candidates(candidate_urls, reference)
-            if match is not None:
-                extraction = match.extraction
-                description_source = "company_site"
-                url = match.url
-                remote_badge = match.remote_badge
-                logger.info("Tier 3: candidate %s confirmed for %s", match.url, adzuna.title)
-            else:
-                logger.info("Tier 3: no candidate confirmed for %s", adzuna.title)
-        except Exception:
-            logger.exception("Tier 3 fallback search failed for %s", adzuna.title)
-
-    # Salary detection only runs for tier 3 (_confirm_and_extract) -- tier
-    # 1/2's deterministic extraction dict has no salary_* keys at all,
-    # since that page IS Adzuna's own data source, not an independent one
-    # to check against Adzuna's salary fields. Falling through to None
-    # here (rather than raising) is deliberate so a tier 1/2 result falls
-    # straight through to Adzuna's own salary_min/salary_max/salary_is_predicted.
-    salary_min, salary_max, salary_is_predicted = (
-        _parse_salary_from_extraction(extraction, adzuna.title) if extraction is not None
-        else (None, None, None)
-    )
-    if salary_min is None:
-        salary_min = adzuna.salary_min
-        salary_max = adzuna.salary_max
-        salary_is_predicted = adzuna.salary_is_predicted
-
-    description = (
-        extraction["full_description"] if extraction is not None else adzuna.description
-    ) or ""
 
     # Adzuna's own REMOTE badge (deterministic, when present) wins outright
-    # -- it's a direct site-provided signal, not a guess. Otherwise: for
-    # tier 1/2 (no LLM call anywhere else on that path), a minimal,
+    # -- a direct site-provided signal, not a guess. Otherwise a minimal,
     # output-bounded classification call answers remote/hybrid/onsite from
-    # the JD text alone -- a real, deliberate LLM cost added back
-    # specifically for this field, kept small by asking for nothing but a
-    # single enum word. For tier 3, work_location already came back as
-    # part of the same confirm+extract call, so no extra call is needed.
-    if remote_badge:
+    # the JD text alone (one enum word out).
+    if page.remote_badge:
         work_location = "remote"
-    elif description_source == "redirect_url" and extraction is not None:
-        work_location = await _classify_work_location(extraction["full_description"])
-    elif extraction is not None:
-        work_location = _normalize_work_location(extraction.get("work_location"))
     else:
-        work_location = None
+        work_location = await _classify_work_location(page.metadata_text)
 
+    # Salary always comes from Adzuna's own fields: this page IS Adzuna's
+    # data source, so there's no independent JD here to check them against.
     return CaptureResult(
-        description=description,
-        description_source=description_source,
-        url=url,
-        salary_min=salary_min,
-        salary_max=salary_max,
-        salary_is_predicted=salary_is_predicted,
+        description=page.metadata_text,
+        description_source="redirect_url",
+        url=normalized_url,
+        salary_min=adzuna.salary_min,
+        salary_max=adzuna.salary_max,
+        salary_is_predicted=adzuna.salary_is_predicted,
         work_location=work_location,
     )
 
@@ -982,10 +835,9 @@ async def capture_from_search(
 ) -> Optional[CaptureResult]:
     """Tier-3-only capture for sources with no redirect_url and no Adzuna
     snippet/salary/remote-badge fallback -- agents/digest_source.py's use
-    case. candidate_urls comes from the caller's own search (Google CSE,
-    restricted to JOB_BOARD_DOMAINS -- see CLAUDE.md's Phase 4 section),
-    not _web_search(). Reuses walk_candidates() and
-    _parse_salary_from_extraction(), same as capture()'s tier 3 path.
+    case. candidate_urls comes from the caller's own search
+    (agents/digest_search.py -- see CLAUDE.md's Phase 4 section). Reuses
+    walk_candidates() and _parse_salary_from_extraction().
 
     Returns None if no candidate confirms -- unlike capture(), there's no
     snippet to degrade to here, so callers should skip the item entirely

@@ -13,9 +13,10 @@ smoke test before running against everything):
 
     uv run agents/categorize.py --limit 5
 
-Uses the raw Anthropic SDK, not claude_agent_sdk (every other Claude call
-in this project uses claude_agent_sdk -- this is the deliberate exception).
-Measured directly on a real call: claude_agent_sdk's CLI harness adds
+Uses the raw Anthropic SDK, not claude_agent_sdk. (This started as the one
+deliberate exception; every other Claude call in this project has since
+moved to the raw SDK for the same reason, and claude_agent_sdk is no longer
+used anywhere.) Measured directly on a real call: claude_agent_sdk's CLI harness adds
 ~18,600 tokens of its own system prompt + built-in tool declarations to
 every call (billed as a 1.25x cache write each time, since it's never
 reused across separate query() invocations -- see fetchers.py's "Cost
@@ -56,8 +57,7 @@ import observability.tracing  # noqa: F401
 logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
 logger = logging.getLogger(__name__)
 # Quiet the SDK's own per-request INFO line ("HTTP Request: POST ... 200 OK")
-# -- not useful at our log level, same reasoning as discovery.py silencing
-# claude_agent_sdk's own noise.
+# -- not useful at our log level.
 logging.getLogger("httpx2").setLevel(logging.WARNING)
 
 # Same reasoning as fetchers.py's narrow judgment calls for model choice:
@@ -144,8 +144,7 @@ def get_llm_error_count() -> int:
     """Cumulative count of Claude API calls that raised outright this
     process -- rate limits, an out-of-credits account, auth failures,
     connection errors. Same purpose as fetchers.py's get_llm_error_count();
-    tracked separately since these are two different Claude clients
-    (raw Anthropic SDK here vs. claude_agent_sdk there)."""
+    tracked separately, one tally per module."""
     return _llm_error_count
 
 
