@@ -1105,8 +1105,9 @@ governed by this same reasoning:
      on the same day, and deduping first avoids paying for the
      search+confirm+extract pipeline twice for what's actually one
      posting.
-2. **Search via `agents/digest_search.py`**, a whole-web raw Anthropic SDK
-   `web_search` call, one query per extracted `(title, company)` pair,
+2. **Search via `agents/digest_search.py`**, a whole-web Brave Search API
+   call (originally Claude's `web_search` tool -- see "Switching search to
+   Brave" below), one query per extracted `(title, company)` pair,
    `"{title} {company}"`, returning up to 10 ranked candidate URLs.
    - **Google's Custom Search JSON API was the original plan here and is
      now abandoned -- confirmed dead, not a config problem.** Built out
@@ -1296,9 +1297,11 @@ enforces before Publish is even clickable, worth knowing in advance:
   regardless of Testing vs. production status, not a sign verification
   is actually required here.
 
-Nothing else needs gathering for the search step -- `agents/digest_search.py`
-uses the same `ANTHROPIC_API_KEY` already required from Phase 1, since it's
-a raw Anthropic SDK call, not a separate provider. (Google Custom Search
+**A Brave Search API key** for the search step (`BRAVE_API_KEY`): sign up at
+https://brave.com/search/api/, pick the Search plan, create a key. Needed
+locally in `.env` and as a `BRAVE_API_KEY` GitHub Actions secret. No
+silent fallback if it's unset -- `digest_search.py` raises on the missing
+variable like every other required credential here. (Google Custom Search
 JSON API was the original plan and required its own API key + Programmable
 Search Engine setup; both are moot now that it's confirmed dead for new
 customers -- see above.)
@@ -1313,8 +1316,8 @@ job-hunt-agents/
     ├── digest_source.py          # orchestration: pull parsers -> fetch emails
     │                              # -> pool+dedupe -> digest_search.search()
     │                              # -> reuses fetchers.py's candidate walk
-    ├── digest_search.py          # raw Anthropic SDK web_search, whole-web,
-    │                              # blocked_domains=["linkedin.com"] only
+    ├── digest_search.py          # Brave Search API, whole-web,
+    │                              # -site:linkedin.com only
     ├── gmail_client.py           # shared Gmail read access (also used by
     │                              # Phase 3's tracker, once that's built)
     └── digest_parsers/
@@ -1602,13 +1605,46 @@ than guessing (single runs, so read the numbers as approximate):
 Estimated effect per digest listing (measured pieces, projected totals):
 matched at candidate #1 goes from about $0.063 to about $0.033; a
 10-candidate miss from about $0.39 to about $0.06. The search call
-($0.027) is now the largest fixed per-listing cost -- which reopens the
-Brave Search API idea rejected earlier, for a reason that didn't exist
-then: at about $0.005 per query with no tokens at all, it would cut that
-line by roughly 80%, and the earlier side-by-side already showed
-near-identical result quality with only `linkedin.com` excluded. Not done
-yet; the earlier argument that search wasn't the expensive part only held
-while the harness dominated.
+($0.027) was left as the largest fixed per-listing cost, which is what
+the next section addresses.
+
+### Switching search to Brave
+
+With the harness gone the search call was the biggest fixed cost per
+listing, so `agents/digest_search.py` now calls the Brave Search API
+instead of Claude's `web_search` tool: a flat ~$0.005 per query (Brave's
+Search plan list price) versus ~$0.027, with no tokens at all -- search is
+mechanical retrieval of a ranked URL list, so there was nothing for a
+model to add. This is the Brave idea declined earlier for lack of a
+reason; the reason arrived once search was the dominant cost. Quality was
+already checked head-to-head before the switch (5 of 5 on the same real
+listings for both, 4 of 5 landing on the identical final URL, with only
+`linkedin.com` excluded), not re-run for the swap itself.
+
+- **Domain exclusion is a `-site:linkedin.com` query operator**, since Brave
+  has no `blocked_domains` parameter the way Claude's tool did. Worth
+  watching for the operator being ignored on unusual queries -- an
+  unblocked LinkedIn candidate would just fail its fetch and cost a wasted
+  walk step, not break anything.
+- **Cost is a count x price** (`PRICE_PER_SEARCH_USD`), not read from a
+  usage block, so it needs updating by hand if Brave's pricing changes.
+  Failed searches aren't counted as spend. A failure (outage, bad or
+  revoked key, exhausted quota) raises `SearchError`, which increments the
+  same error counter that feeds `agent_runs.llm_errors` and the digest's
+  failure line, and is caught by `digest_source`'s per-listing handler as
+  an `error` -- deliberately not returned as an empty list, which would
+  have been recorded as a "no match" and written a 7-day search-miss
+  cooldown row for every listing in the run over a problem unrelated to
+  those listings.
+- **One retry on 429/5xx, then give up.** Brave's free tier is limited to
+  roughly one request per second; the pipeline's per-listing walk takes
+  longer than that on its own, so this has not been an issue, but the
+  retry covers it if a paid plan's limit is ever lower than the free one's.
+- **New secret:** `BRAVE_API_KEY` in `.env` and as a GitHub Actions
+  secret; the workflow passes it as job-level `env:`.
+- `pricing.py`'s `web_search` fee constant is no longer used by any call
+  site but is left in place: `usage_cost_usd` still handles the field if
+  a Claude `web_search` call is ever used again.
 
 ---
 
@@ -1874,7 +1910,8 @@ Needed from Phase 1:
 - Python throughout.
 - Anthropic Python SDK (`anthropic`), raw, for every LLM call: confirm+
   extract and work-location classification in `fetchers.py`,
-  `categorize.py`, and `digest_search.py`'s `web_search` call.
+  and `categorize.py`. (`digest_search.py` uses the Brave Search API,
+  not an LLM -- see Phase 4's "Switching search to Brave".)
   `claude-agent-sdk` was used for the `fetchers.py` calls originally and
   has been removed as a dependency -- see "Fit categorization" and Phase
   4's "Moving Claude calls off the agent-SDK harness" for why (its CLI
@@ -1975,11 +2012,10 @@ GMAIL_CREDENTIALS_JSON=            # read-only Gmail scope only
 # GMAIL_TOKEN_PATH defaults to personal/gmail_token.json if unset, so this
 # line is only needed to point somewhere else)
 GMAIL_TOKEN_PATH=personal/gmail_token.json
+BRAVE_API_KEY=                     # agents/digest_search.py's search provider
 ```
 
-No separate search-provider credentials needed for Phase 4 -- `agents/
-digest_search.py` reuses `ANTHROPIC_API_KEY` from Phase 1 (a raw Anthropic
-SDK call, not a new provider). `GOOGLE_CSE_API_KEY`/`GOOGLE_CSE_CX` were
+`GOOGLE_CSE_API_KEY`/`GOOGLE_CSE_CX` were
 part of an earlier version of this plan (Google Custom Search JSON API)
 that turned out to be closed to new customers -- see Phase 4's "What this
 builds" for the full story; nothing in this codebase reads those two

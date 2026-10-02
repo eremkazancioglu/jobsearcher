@@ -65,9 +65,9 @@ jobs:
       PREFERENCES_PATH: personal/preferences.md
       # agents/digest_source.py (Phase 4) -- Gmail read-only token restored
       # from a secret below, same "personal/ is gitignored, reconstruct it
-      # from a repo secret" pattern as RESUME_B64/PREFERENCES_B64. No
-      # separate search-provider secret needed -- digest_search.py reuses
-      # ANTHROPIC_API_KEY above.
+      # from a repo secret" pattern as RESUME_B64/PREFERENCES_B64.
+      # digest_search.py's search provider key:
+      BRAVE_API_KEY: ${{ secrets.BRAVE_API_KEY }}
       GMAIL_TOKEN_PATH: personal/gmail_token.json
       SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
       LANGFUSE_PUBLIC_KEY: ${{ secrets.LANGFUSE_PUBLIC_KEY }}
