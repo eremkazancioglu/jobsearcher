@@ -1,28 +1,28 @@
 {
   "categorize": {
-    "status": "partial",
-    "started_at": "2026-10-02T17:06:30.702199+00:00",
-    "finished_at": "2026-10-02T17:06:33.426356+00:00",
-    "items_processed": 0,
-    "items_new": 0,
-    "llm_errors": 16,
-    "llm_cost_usd": 0.0,
-    "error_message": "39dd0c90-1cdc-486b-8e75-15bf73db6844 (AI and ML Engineer and Data Scientist): Error code: 400 - {'type': 'error', 'error': {'type': 'invalid_request_error', 'message': 'Your credit balance is too low to access the Anthropic API. Please go to Plans & Billing to upgrade or purchase credits.'}, 'request_id': 'req_011CfdmyAQyzQcWbkvCVvMyB'}; 8137d2da-179b-4fa2-be6a-2a22b26c879e (Staff Data Scientist, Healthcare Economics): Error code: 400 - {'type': 'error', 'error': {'type': 'invalid_request_error', 'message': 'Your credit balance is too low to access the Anthropic API. Please go to Plans & Billing to upgrade or purchase credits.'}, 'request_id': 'req_011CfdmyBAdJ1jZ6WfkjxrXN'}; 0222afec-ecdc-4ec1-984b-812eef00538b (Senior Data Scientist): Error code: 400 - {'type': 'error', 'error': {'type': 'invalid_request_error', 'message': 'Your credit balance is too low to access the Anthropic API. Please go to Plans & Billing to upgrade or purchase credits.'}, 'request_id': 'req_011CfdmyBropnd9XEpoxWt3a'}; a1418015-ac3a-4c91-bc14-ab775d54ce9c (Sr. Principal Applied Scientist): Error code: 400 - {'type': 'error', 'error': {'type': 'invalid_request_error', 'message': 'Your credit balance is too low to access the Anthropic API. Please go to Plans & Billing to upgrade or purchase credits.'}, 'request_id': 'req_011CfdmyCbTFGz3pnGf1RAjp'}; eadcc387-a518-454d-a71b-efe3d57b3064 (Data Scientist): Error code: 400 - {'type': 'error', 'error': {'type': 'invalid_request_error', 'message': 'Your credit balance is too low to access the Anthropic API. Please go to Plans & Billing to upgrade or purchase credits.'}, 'request_id': 'req_011CfdmyDSK67EUFLLsJw6xY'}; 48772b4b-ea59-4204-8cbd-7be21139d669 (Applied AI Health Scientist): Error code: 400 - {'type': 'error', 'error': {'type': 'invalid_request_error', 'message': 'Your credit balance is too low to access the Anthropic API. Please go to Plans & Billing to upgrade or purchase credits.'}, 'request_id': 'req_011CfdmyE7EwyksTSWQfkXka'}; 217aa108-6f3d-47d5-ad88-897e7a90ea47 (Data Analyst, Senior): Error code: 400 - {'type': 'error', 'error': {'type': 'invalid_request_error', 'message': 'Your credit balance is too low to access the Anthropic API. Please go to Plans & Billing to upgrade or purchase credits.'}, 'request_id': 'req_011CfdmyErPEx9WNtUyft48M'}; 4f060c70-20ac-4e0a-aad9-728ba7ede40e (Director, Data Science): Error code: 400 - {'type': 'error', 'error': {'type': 'invalid_request_error', 'message': 'Your credit balance is too low to access the Anthropic API. Please go to Plans & Billing to upgrade or purchase credits.'}, 'request_id': 'req_011CfdmyFanqCkupbkE3gBsL'}; ba569c2c-2a1a-4da1-871d-662195ed6d14 (Data Scientist/Data Science Lead): Error code: 400 - {'type': 'error', 'error': {'type': 'invalid_request_error', 'message': 'Your credit balance is too low to access the Anthropic API. Please go to Plans & Billing to upgrade or purchase credits.'}, 'request_id': 'req_011CfdmyGGxx8nfz4AKwvp4d'}; 9a497868-fe12-4bf5-8141-b1f5507ce2e1 (Manager, Data Science): Error code: 400 - {'type': 'error', 'error': {'type': 'invalid_request_error', 'message': 'Your credit balance is too low to access the Anthropic API. Please go to Plans & Billing to upgrade or purchase credits.'}, 'request_id': 'req_011CfdmyGx8x98MgAhbgT1E3'}; 6ddd50e5-cd87-4da4-b564-5724ff888a43 (Sr. Manager, Master Data Delivery): Error code: 400 - {'type': 'error', 'error': {'type': 'invalid_request_error', 'message': 'Your credit balance is too low to access the Anthropic API. Please go to Plans & Billing to upgrade or purchase credits.'}, 'request_id': 'req_011CfdmyHfocEhqsoif2C5ah'}; 8d2d0b77-8d02-4212-be4e-259c9b66c936 (Manager, Clinical Data Science): Error code: 400 - {'type': 'error', 'error': {'type': 'invalid_request_error', 'message': 'Your credit balance is too low to access the Anthropic API. Please go to Plans & Billing to upgrade or purchase credits.'}, 'request_id': 'req_011CfdmyJPDKn3BNjBNxN3TA'}; 3df1ae60-4493-4dcb-9712-231693e1f3b9 (Senior Manager, Data & Analytics): Error code: 400 - {'type': 'error', 'error': {'type': 'invalid_request_error', 'message': 'Your credit balance is too low to access the Anthropic API. Please go to Plans & Billing to upgrade or purchase credits.'}, 'request_id': 'req_011CfdmyK3PyS2bDcyfmpA9g'}; 1389beb7-9110-412e-bd3f-8e6265a53f88 (Machine Learning Manager, Feed Ecosystems): Error code: 400 - {'type': 'error', 'error': {'type': 'invalid_request_error', 'message': 'Your credit balance is too low to access the Anthropic API. Please go to Plans & Billing to upgrade or purchase credits.'}, 'request_id': 'req_011CfdmyKiaF4J81FXBoU9di'}; 11c005c9-91ab-46ae-8315-7f5f1fa66697 (Manager, Clinical Data Science): Error code: 400 - {'type': 'error', 'error': {'type': 'invalid_request_error', 'message': 'Your credit balance is too low to access the Anthropic API. Please go to Plans & Billing to upgrade or purchase credits.'}, 'request_id': 'req_011CfdmyLPFynSQEJgRY8qru'}; 783f0db9-b200-4f1c-bf81-c34df3633c64 (Senior Manager, Artificial Intelligence): Error code: 400 - {'type': 'error', 'error': {'type': 'invalid_request_error', 'message': 'Your credit balance is too low to access the Anthropic API. Please go to Plans & Billing to upgrade or purchase credits.'}, 'request_id': 'req_011CfdmyMFrjDc4CNrKZDqaH'}"
+    "status": "success",
+    "started_at": "2026-10-02T20:24:47.581627+00:00",
+    "finished_at": "2026-10-02T20:25:42.844444+00:00",
+    "items_processed": 21,
+    "items_new": 21,
+    "llm_errors": 0,
+    "llm_cost_usd": 0.078062,
+    "error_message": null
   },
   "digest": {
     "status": "success",
-    "started_at": "2026-10-02T17:06:34.720486+00:00",
-    "finished_at": "2026-10-02T17:06:34.991341+00:00",
-    "items_processed": 0,
-    "items_new": 0,
+    "started_at": "2026-10-02T20:25:43.778506+00:00",
+    "finished_at": "2026-10-02T20:25:44.714998+00:00",
+    "items_processed": 9,
+    "items_new": 9,
     "llm_errors": 0,
     "llm_cost_usd": 0.0,
     "error_message": null
   },
   "pipeline": {
     "status": "success",
-    "started_at": "2026-10-02T16:54:01.498409+00:00",
-    "finished_at": "2026-10-02T17:06:35.087388+00:00",
+    "started_at": "2026-10-02T20:20:54.762597+00:00",
+    "finished_at": "2026-10-02T20:25:44.914242+00:00",
     "items_processed": 4,
     "items_new": 0,
     "llm_errors": 0,
@@ -31,22 +31,22 @@
   },
   "discovery": {
     "status": "success",
-    "started_at": "2026-10-02T16:54:06.776269+00:00",
-    "finished_at": "2026-10-02T16:54:10.621944+00:00",
-    "items_processed": 2,
-    "items_new": 2,
+    "started_at": "2026-10-02T20:20:59.808363+00:00",
+    "finished_at": "2026-10-02T20:21:03.240777+00:00",
+    "items_processed": 0,
+    "items_new": 0,
     "llm_errors": 0,
-    "llm_cost_usd": 0.0014409999999999998,
+    "llm_cost_usd": 0.0,
     "error_message": null
   },
   "digest_source": {
     "status": "success",
-    "started_at": "2026-10-02T16:54:13.230298+00:00",
-    "finished_at": "2026-10-02T17:06:29.081296+00:00",
-    "items_processed": 14,
-    "items_new": 14,
-    "llm_errors": 15,
-    "llm_cost_usd": 0.751838,
+    "started_at": "2026-10-02T20:21:05.388882+00:00",
+    "finished_at": "2026-10-02T20:24:45.658362+00:00",
+    "items_processed": 5,
+    "items_new": 5,
+    "llm_errors": 0,
+    "llm_cost_usd": 0.08958300000000001,
     "error_message": null
   }
 }
