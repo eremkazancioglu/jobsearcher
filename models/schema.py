@@ -88,6 +88,7 @@ class Posting(BaseModel):
     dismissed_at: Optional[datetime] = None
     digested_at: Optional[datetime] = None
     discovered_at: Optional[datetime] = None
+    pipeline_added_at: Optional[datetime] = None
     applied_at: Optional[datetime] = None
     application_status: ApplicationStatus = "not_applied"
 

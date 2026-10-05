@@ -155,16 +155,16 @@ def insert_agent_run(run: AgentRun) -> None:
 
 
 def fetch_new_matches(since_hours: int | None = None) -> list[Posting]:
-    """strong/mixed postings not yet applied to or dismissed -- the
-    dashboard's "new matches" tab. Newest first, so the freshest matches
+    """strong/mixed postings not yet added to the pipeline or dismissed --
+    the dashboard's "new matches" tab. Newest first, so the freshest matches
     surface at top. since_hours (e.g. 24/72/168 for the dashboard's
     24h/3d/7d lookback options) filters to postings discovered within that
     window; None (the default for any caller besides the dashboard) means
-    no lookback filter -- everything not yet applied to or dismissed,
-    regardless of age."""
+    no lookback filter -- everything not yet added to the pipeline or
+    dismissed, regardless of age."""
     query = (
         "select * from postings where match_category in ('strong','mixed') "
-        "and applied_at is null and dismissed_at is null"
+        "and pipeline_added_at is null and applied_at is null and dismissed_at is null"
     )
     params = ()
     if since_hours is not None:
@@ -190,15 +190,16 @@ def dismiss_posting(posting_id) -> None:
 
 def fetch_undigested_matches() -> list[Posting]:
     """strong/mixed postings not yet sent in a Slack digest -- send_digest.py's
-    input. Filtered to applied_at/dismissed_at is null too: no point
-    digesting something the human has already acted on by the time the
-    digest agent gets to it (e.g. dismissed straight from the dashboard
-    before a digest ran)."""
+    input. Filtered to pipeline_added_at/applied_at/dismissed_at is null
+    too: no point digesting something the human has already acted on by
+    the time the digest agent gets to it (e.g. dismissed straight from the
+    dashboard before a digest ran)."""
     with _connect() as conn:
         with conn.cursor(row_factory=class_row(Posting)) as cur:
             cur.execute(
                 "select * from postings where match_category in ('strong','mixed') "
-                "and applied_at is null and dismissed_at is null and digested_at is null "
+                "and pipeline_added_at is null and applied_at is null "
+                "and dismissed_at is null and digested_at is null "
                 "order by discovered_at asc"
             )
             return cur.fetchall()
@@ -220,31 +221,56 @@ def mark_digested(posting_ids: list) -> None:
 
 
 def fetch_pipeline() -> list[Posting]:
-    """Postings already applied to -- the dashboard's "pipeline" tab."""
+    """Postings the human added to the pipeline, applied or not yet -- the
+    dashboard's "pipeline" tab. Not-yet-applied ones first (they're the ones
+    with a pending decision), then applied ones, newest first within each."""
     with _connect() as conn:
         with conn.cursor(row_factory=class_row(Posting)) as cur:
-            cur.execute("select * from postings where applied_at is not null order by applied_at desc")
+            cur.execute(
+                "select * from postings where pipeline_added_at is not null "
+                "order by (applied_at is not null), coalesce(applied_at, pipeline_added_at) desc"
+            )
             return cur.fetchall()
+
+
+def add_to_pipeline(posting_id) -> None:
+    """Human "I'm pursuing this" signal from the dashboard's new-matches tab
+    -- puts the posting in the pipeline tab without claiming an application
+    was submitted (applied_at/application_status are untouched; see
+    mark_as_applied). Same "human decides, agent never infers" reasoning as
+    applied_at itself."""
+    with _connect() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "update postings set pipeline_added_at = coalesce(pipeline_added_at, now()) "
+                "where id = %s",
+                (posting_id,),
+            )
+        conn.commit()
 
 
 def mark_as_applied(posting_id) -> None:
     """The only way applied_at/application_status get set -- a direct human
-    action from the dashboard, never inferred by an agent (see CLAUDE.md's
-    "Why applied_at is set by the human, not inferred by an agent")."""
+    action from the dashboard's pipeline tab, never inferred by an agent
+    (see CLAUDE.md's "Why applied_at is set by the human, not inferred by an
+    agent"). Also sets pipeline_added_at if somehow unset, so an applied
+    posting can never be missing from the pipeline tab."""
     with _connect() as conn:
         with conn.cursor() as cur:
             cur.execute(
-                "update postings set applied_at = now(), application_status = 'applied' where id = %s",
+                "update postings set applied_at = now(), application_status = 'applied', "
+                "pipeline_added_at = coalesce(pipeline_added_at, now()) where id = %s",
                 (posting_id,),
             )
         conn.commit()
 
 
 def remove_from_pipeline(posting_id) -> None:
-    """The inverse of mark_as_applied -- clears applied_at/application_status
-    back to their pre-applied defaults and drops any application_events
-    logged against this posting (those only make sense for an application
-    that's actually being tracked). The posting itself is never deleted --
+    """The inverse of add_to_pipeline (and so of mark_as_applied too) --
+    clears pipeline_added_at/applied_at/application_status back to their
+    defaults and drops any application_events logged against this posting
+    (those only make sense for an application that's actually being
+    tracked). The posting itself is never deleted --
     it reappears in "new matches" if still strong/mixed, same as any other
     uncategorized-into-applied posting would. Same "human decides, agent
     never infers" reasoning as mark_as_applied -- this is a correction a
@@ -253,7 +279,8 @@ def remove_from_pipeline(posting_id) -> None:
         with conn.cursor() as cur:
             cur.execute("delete from application_events where posting_id = %s", (posting_id,))
             cur.execute(
-                "update postings set applied_at = null, application_status = 'not_applied' where id = %s",
+                "update postings set pipeline_added_at = null, applied_at = null, "
+                "application_status = 'not_applied' where id = %s",
                 (posting_id,),
             )
         conn.commit()

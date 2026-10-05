@@ -4,18 +4,21 @@
 
 Three tabs, per CLAUDE.md's Phase 2 spec:
     - New matches: strong/mixed postings not yet applied to or dismissed,
-      with a discovered-within lookback filter (24h/3d/7d) and a
-      mark-as-applied action. This is the only place applied_at gets set --
-      always a direct human action, never inferred by an agent (see
-      CLAUDE.md's "Why applied_at is set by the human, not inferred by an
-      agent"). Also a dismiss action ("not interested") -- doesn't delete
-      the posting, just drops dismissed_at so it stops showing up here; no
-      reason/notes field yet (not needed until it's actually wanted).
-    - Pipeline: postings already applied to, current status, event history,
-      and a remove-from-pipeline action (the inverse of mark-as-applied --
-      clears applied_at/application_status and drops event history, does
-      not delete the posting; a two-step confirm since it's destructive to
-      event history).
+      with a discovered-within lookback filter (24h/3d/7d) and an
+      add-to-pipeline action ("I'm pursuing this" -- sets pipeline_added_at,
+      says nothing about whether an application was submitted). Also a
+      dismiss action ("not interested") -- doesn't delete the posting, just
+      sets dismissed_at so it stops showing up here; no reason/notes field
+      yet (not needed until it's actually wanted).
+    - Pipeline: postings added to the pipeline, applied or not yet. The
+      mark-as-applied action lives only here, and is the only place
+      applied_at gets set -- always a direct human action, never inferred
+      by an agent (see CLAUDE.md's "Why applied_at is set by the human, not
+      inferred by an agent"). Applied postings also show status and event
+      history. A remove-from-pipeline action (the inverse of both --
+      clears pipeline_added_at/applied_at/application_status and drops event
+      history, does not delete the posting; a two-step confirm since it's
+      destructive to event history).
     - Pipeline health: recent agent_runs, so a failed/partial run is
       visible without reading logs.
 """
@@ -28,6 +31,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 import streamlit as st
 
 from db.db import (
+    add_to_pipeline,
     dismiss_posting,
     fetch_application_events,
     fetch_new_matches,
@@ -81,8 +85,8 @@ with tab_new:
                 if posting.match_notes:
                     st.write(posting.match_notes)
             with col_action:
-                if st.button("Mark applied", key=f"apply-{posting.id}"):
-                    mark_as_applied(posting.id)
+                if st.button("Add to pipeline", key=f"add-{posting.id}"):
+                    add_to_pipeline(posting.id)
                     st.rerun()
                 if st.button("Dismiss", key=f"dismiss-{posting.id}"):
                     dismiss_posting(posting.id)
@@ -91,15 +95,20 @@ with tab_new:
 with tab_pipeline:
     postings = fetch_pipeline()
     if not postings:
-        st.info("No applications tracked yet -- mark a posting as applied from the New matches tab.")
+        st.info("Nothing in the pipeline yet -- add a posting from the New matches tab.")
     for posting in postings:
         with st.container(border=True):
             col_main, col_action = st.columns([5, 1])
             with col_main:
                 st.markdown(f"**[{posting.title}]({posting.url})** at **{posting.company}**")
-                applied_str = posting.applied_at.strftime("%Y-%m-%d") if posting.applied_at else "unknown"
-                st.caption(f"Status: {posting.application_status} · Applied {applied_str}")
-                events = fetch_application_events(posting.id)
+                if posting.applied_at:
+                    st.caption(
+                        f"Status: {posting.application_status} · "
+                        f"Applied {posting.applied_at:%Y-%m-%d}"
+                    )
+                else:
+                    st.caption(f"Not applied yet · Added {posting.pipeline_added_at:%Y-%m-%d}")
+                events = fetch_application_events(posting.id) if posting.applied_at else []
                 if events:
                     with st.expander(f"{len(events)} event(s)"):
                         for event in events:
@@ -108,6 +117,9 @@ with tab_pipeline:
                                 line += f": {event.notes}"
                             st.write(line)
             with col_action:
+                if not posting.applied_at and st.button("Mark applied", key=f"apply-{posting.id}"):
+                    mark_as_applied(posting.id)
+                    st.rerun()
                 # Two-step confirm -- this also drops event history
                 # (remove_from_pipeline), so a single misclick shouldn't be
                 # able to do that.

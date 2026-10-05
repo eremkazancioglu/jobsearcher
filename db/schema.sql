@@ -48,7 +48,13 @@ create table postings (
                                             -- signal like dismissed_at/applied_at; keeps a
                                             -- posting from being sent more than once
     discovered_at timestamptz not null default now(),
-    applied_at timestamptz,                -- set by the human, via Streamlit
+    pipeline_added_at timestamptz,         -- set by the human ("Add to pipeline" on the
+                                            -- Streamlit new-matches tab) -- "I'm pursuing
+                                            -- this", before an application is actually
+                                            -- submitted; the pipeline tab is every row
+                                            -- where this is set
+    applied_at timestamptz,                -- set by the human, via Streamlit ("Mark applied"
+                                            -- on the pipeline tab), once actually submitted
     application_status text not null default 'not_applied'
         check (application_status in
             ('not_applied','applied','interviewing','rejected','offer','withdrawn')),

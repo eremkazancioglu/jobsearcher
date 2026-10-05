@@ -92,7 +92,11 @@ create table postings (
     digested_at timestamptz,               -- set by send_digest.py once sent -- agent-set
                                             -- bookkeeping, not a human signal like the two above
     discovered_at timestamptz not null default now(),
-    applied_at timestamptz,                -- set by the human, via Streamlit
+    pipeline_added_at timestamptz,         -- set by the human ("Add to pipeline" on the
+                                            -- Streamlit new-matches tab): "I'm pursuing
+                                            -- this," before an application is submitted
+    applied_at timestamptz,                -- set by the human, via Streamlit ("Mark applied"
+                                            -- on the pipeline tab), once actually submitted
     application_status text not null default 'not_applied'
         check (application_status in
             ('not_applied','applied','interviewing','rejected','offer','withdrawn')),
@@ -204,8 +208,8 @@ Two Adzuna-specific things to carry into the implementation:
 
 Only the person actually knows the moment they submitted an application on
 a company's site -- an agent can't reliably infer that from anything
-public. So "mark as applied" is a direct write from the Streamlit dashboard
-(sets `applied_at` and flips `application_status` to `applied`), not an
+public. So "mark as applied" is a direct write from the Streamlit dashboard's
+pipeline tab (sets `applied_at` and flips `application_status` to `applied`), not an
 agent action. The application tracker agent only ever operates on postings
 where `applied_at is not null` -- it watches email for what happens *after*
 a human-confirmed application, it doesn't try to detect the application
@@ -931,30 +935,41 @@ tracker -- see "Phase 3" below for why that's split out.
       `llm_errors=2` correctly produced the warning line before being
       cleaned up.
 - **Streamlit dashboard**: a "new matches" tab (`match_category in
-  ('strong','mixed')`, not yet applied to or dismissed, with a
+  ('strong','mixed')`, not yet added to the pipeline or dismissed, with a
   discovered-within lookback filter -- 24h/3d/7d, radio-selected, default
-  7d -- and mark-as-applied / dismiss actions), a "pipeline" tab (applied
-  postings, current status, event history, plus a remove-from-pipeline
-  action), and a "pipeline health" tab (see monitoring below).
-  - **Dismiss vs. mark-as-applied are two distinct signals, not one.**
-    Mark-as-applied means "I'm pursuing this" (sets `applied_at`, moves it
-    to the pipeline). Dismiss means "not interested" (sets a new
-    `dismissed_at` column on `postings`, drops it out of "new matches"
-    only) -- neither implies the other, and conflating them would mean a
-    dismissed posting either clutters the pipeline tab or a genuinely
-    applied-to posting silently vanishes. The posting itself is never
+  7d -- and add-to-pipeline / dismiss actions), a "pipeline" tab (postings
+  added to the pipeline, with a mark-as-applied action for ones not yet
+  applied, current status and event history for applied ones, plus a
+  remove-from-pipeline action), and a "pipeline health" tab (see
+  monitoring below).
+  - **Three distinct human signals, not one: add-to-pipeline, mark-as-
+    applied, dismiss.** Add-to-pipeline means "I'm pursuing this" (sets a
+    new `pipeline_added_at` column, moves it to the pipeline tab, leaves
+    `applied_at`/`application_status` untouched). Mark-as-applied -- offered
+    only on the pipeline tab -- means "I actually submitted it" (sets
+    `applied_at`, flips `application_status` to `applied`). This split
+    exists because pursuing a posting and having applied to it are
+    different states with a real gap between them, and the tracker agent
+    (Phase 3) only cares about the second. Dismiss means "not interested"
+    (sets `dismissed_at`, drops it out of "new matches" only) -- none
+    implies another, and conflating them would mean a dismissed posting
+    either clutters the pipeline tab or a genuinely pursued posting
+    silently vanishes. `fetch_new_matches()` and the digest's
+    `fetch_undigested_matches()` both exclude anything with
+    `pipeline_added_at` set. The posting itself is never
     deleted by either action. No reason/notes field on dismissal yet
     (e.g. "why" it was dismissed) -- deliberately deferred until it's
     actually wanted, not built speculatively; `dismissed_at` alone doesn't
     block adding that later.
-  - **Remove-from-pipeline** (the inverse of mark-as-applied): clears
-    `applied_at`/`application_status` back to defaults and deletes any
+  - **Remove-from-pipeline** (the inverse of both add-to-pipeline and
+    mark-as-applied): clears `pipeline_added_at`/`applied_at`/
+    `application_status` back to defaults and deletes any
     `application_events` logged against that posting -- a human
     correction ("I mis-clicked, or changed my mind"), not something an
     agent infers, same reasoning as `applied_at` itself. Two-step confirm
     in the UI specifically because it deletes event history, unlike
-    dismiss (reversible in principle, nothing destructive happens) and
-    mark-as-applied (additive).
+    dismiss (reversible in principle, nothing destructive happens),
+    add-to-pipeline and mark-as-applied (both additive).
 - **Full observability**: Langfuse tracing, the `agent_runs` table, and
   the self-committing `STATUS.json` (see "Monitoring and observability"
   below).
