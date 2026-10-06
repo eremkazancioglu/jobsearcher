@@ -336,9 +336,26 @@ def sum_llm_cost_since(since) -> float:
             return float(cur.fetchone()[0])
 
 
+def sum_llm_cost_by_agent_since(since) -> dict[str, float]:
+    """llm_cost_usd summed per agent_name since `since`, only agents that
+    spent something -- send_digest.py's per-run cost breakdown (see
+    sum_llm_cost_since for why costs are persisted per stage at all)."""
+    with _connect() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "select agent_name, sum(llm_cost_usd) from agent_runs "
+                "where started_at > %s group by agent_name having sum(llm_cost_usd) > 0 "
+                "order by sum(llm_cost_usd) desc",
+                (since,),
+            )
+            return {name: float(total) for name, total in cur.fetchall()}
+
+
 def sum_llm_errors_since(since) -> int:
-    """Total llm_errors across discovery/categorize runs since `since` --
-    the two agents that make Claude calls per posting. Used by
+    """Total llm_errors across discovery/digest_source/categorize runs
+    since `since` -- the agents that make Claude calls (or, for
+    digest_source, Claude plus Brave search calls, whose failures are
+    counted in the same column). Used by
     send_digest.py to report infrastructure-level failures (rate limits,
     out of credits, budget caps) since the last digest, separate from
     whether postings still got processed via graceful degrade."""
@@ -346,7 +363,8 @@ def sum_llm_errors_since(since) -> int:
         with conn.cursor() as cur:
             cur.execute(
                 "select coalesce(sum(llm_errors), 0) from agent_runs "
-                "where agent_name in ('discovery', 'categorize') and started_at > %s",
+                "where agent_name in ('discovery', 'digest_source', 'categorize') "
+                "and started_at > %s",
                 (since,),
             )
             return cur.fetchone()[0]

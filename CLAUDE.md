@@ -887,6 +887,15 @@ tracker -- see "Phase 3" below for why that's split out.
     to flip back to `False` once the schedule is trusted -- not deleted
     or built as a separate script, since the underlying "digest, but
     empty" logic doesn't change, only whether an empty run says anything.
+  - **Every digest also reports what the run cost**, as a footer line
+    (`Run cost: $0.1676 (digest_source $0.16, categorize $0.01)`): Claude
+    plus Brave search spend summed from `agent_runs.llm_cost_usd` per stage
+    since the previous digest, via `sum_llm_cost_by_agent_since()`. Same
+    window as the failure line below, which is exactly one pipeline run's
+    stages since the digest runs last. Always shown, even at $0.00, for
+    the same reason as the failure line. Doesn't include the digest stage
+    itself (it makes no paid calls) or anything outside `agent_runs`
+    (Streamlit, GitHub Actions minutes).
   - **Every digest also reports Claude API call failures since the last
     digest** -- rate limits, an out-of-credits account, a
     `max_tokens` cutoff, auth issues. Deliberately not "postings that
@@ -923,7 +932,9 @@ tracker -- see "Phase 3" below for why that's split out.
       only reflected `categorize.py`'s half of the picture. Found while
       building this, not a separate pre-planned fix.
     - `send_digest.py`'s `_llm_error_line()` sums `llm_errors` from
-      `discovery`/`categorize` runs since the previous `digest` run
+      `discovery`/`digest_source`/`categorize` runs (`digest_source` was
+      missing at first, which silently hid Brave search failures -- they're
+      counted in that agent's `llm_errors` too) since the previous `digest` run
       (`fetch_last_agent_run("digest")` anchors the window; falls back to
       a 24h lookback on the very first digest ever, when there's no prior
       run to anchor to) via `sum_llm_errors_since()`. Always shown, even

@@ -21,8 +21,12 @@ schedule is actually firing (see CLAUDE.md's "Scheduling and triggering").
 Flip to False once that's trusted, to go back to fully silent on an empty
 run.
 
-Every digest also reports how many Claude API calls (discovery/categorize,
-since the previous digest) failed outright -- rate limits, an
+Every digest also reports what the pipeline run cost (Claude plus Brave
+search spend since the previous digest, broken down by stage) so spend is
+visible right in Slack, not just in the Actions log.
+
+Every digest also reports how many Claude API calls (discovery/
+digest_source/categorize, since the previous digest) failed outright -- rate limits, an
 out-of-credits account, a max_tokens cutoff, auth issues. This is
 deliberately separate from whether postings got processed: fetchers.py's
 tiered capture degrades gracefully around individual call failures, so a
@@ -44,7 +48,13 @@ import requests
 from dotenv import load_dotenv
 
 from agents.common import AgentRunTracker
-from db.db import fetch_last_agent_run, fetch_undigested_matches, mark_digested, sum_llm_errors_since
+from db.db import (
+    fetch_last_agent_run,
+    fetch_undigested_matches,
+    mark_digested,
+    sum_llm_cost_by_agent_since,
+    sum_llm_errors_since,
+)
 
 load_dotenv(override=True)
 
@@ -83,16 +93,30 @@ def _send_slack(text: str) -> None:
     response.raise_for_status()
 
 
-def _llm_error_line() -> str:
-    """How many discovery/categorize Claude calls failed outright since
-    the last digest -- falls back to a 24h lookback on the very first
-    digest ever, when there's no prior digest run to anchor "since" to."""
+def _since_last_digest() -> datetime:
+    """The window every footer line below covers -- since the previous
+    digest, which is exactly this pipeline run's stages. Falls back to a
+    24h lookback on the very first digest ever, when there's no prior
+    digest run to anchor "since" to."""
     last_digest = fetch_last_agent_run("digest")
-    since = last_digest.finished_at if last_digest else datetime.now(timezone.utc) - timedelta(hours=24)
-    count = sum_llm_errors_since(since)
+    return last_digest.finished_at if last_digest else datetime.now(timezone.utc) - timedelta(hours=24)
+
+def _cost_line() -> str:
+    """What this pipeline run cost, total and per stage. Always shown, even
+    at $0.00 -- same reasoning as the error line: a missing number and a
+    zero look different."""
+    by_agent = sum_llm_cost_by_agent_since(_since_last_digest())
+    total = sum(by_agent.values())
+    breakdown = ", ".join(f"{name} ${cost:.4f}" for name, cost in by_agent.items())
+    return f"\n\nRun cost: ${total:.4f}" + (f" ({breakdown})" if breakdown else "")
+
+def _llm_error_line() -> str:
+    """How many discovery/digest_source/categorize Claude (or search) calls
+    failed outright since the last digest."""
+    count = sum_llm_errors_since(_since_last_digest())
     if count:
-        return f"\n\n:warning: {count} LLM call error(s) since last digest -- check agent_runs/Langfuse."
-    return "\n\n0 LLM call errors since last digest."
+        return f"\n:warning: {count} LLM/search call error(s) since last digest -- check agent_runs/Langfuse."
+    return "\n0 LLM/search call errors since last digest."
 
 
 async def main() -> None:
@@ -101,7 +125,7 @@ async def main() -> None:
         logger.info("%d new match(es) to digest", len(postings))
         if not postings:
             if NOTIFY_ON_EMPTY:
-                text = "No new job matches this run." + _llm_error_line()
+                text = "No new job matches this run." + _cost_line() + _llm_error_line()
                 if SLACK_WEBHOOK_URL:
                     _send_slack(text)
                     logger.info("Sent empty-run confirmation to Slack")
@@ -112,7 +136,7 @@ async def main() -> None:
 
         header = f"*{len(postings)} new job match(es)*"
         body = "\n\n".join(_format_posting(p) for p in postings)
-        text = f"{header}\n\n{body}" + _llm_error_line()
+        text = f"{header}\n\n{body}" + _cost_line() + _llm_error_line()
 
         if SLACK_WEBHOOK_URL:
             _send_slack(text)
