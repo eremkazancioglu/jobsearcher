@@ -70,7 +70,7 @@ MAX_FALLBACK_CANDIDATES = 10
 # tasks, not deep reasoning -- Haiku is plenty. Thinking is left off (the
 # raw SDK doesn't enable it unless asked); validated against known
 # accept/reject cases before switching, see CLAUDE.md.
-CLAUDE_MODEL = "claude-haiku-4-5-20251001"
+CLAUDE_MODEL = "claude-haiku-5-5"
 # Bounds worst-case output per call (the confirm+extract schema echoes the
 # job description back, capped at ~18k input characters) -- replaces the
 # per-call max_budget_usd cap claude_agent_sdk offered, which has no raw-SDK
@@ -216,7 +216,7 @@ _total_cost_usd = 0.0
 
 def _record_cost(usage) -> None:
     global _total_cost_usd
-    _total_cost_usd += usage_cost_usd(usage)
+    _total_cost_usd += usage_cost_usd(usage, CLAUDE_MODEL)
 
 
 def get_total_cost_usd() -> float:

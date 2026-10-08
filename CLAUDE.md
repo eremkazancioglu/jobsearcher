@@ -1672,6 +1672,55 @@ listings for both, 4 of 5 landing on the identical final URL, with only
   site but is left in place: `usage_cost_usd` still handles the field if
   a Claude `web_search` call is ever used again.
 
+
+### Switching capture calls to Haiku 5.5
+
+`fetchers.py` (confirm+extract, work-location classification) now uses
+`claude-haiku-5-5` instead of Haiku 4.5. Published price: $0.10/$0.50 per
+million input/output tokens versus $1/$5 -- 10x lower per token, but Haiku
+5.5 uses the newer tokenizer (about 30% more tokens for the same text), so
+roughly 6-7x lower in practice. It also has a second, pricier tier for
+prompts over 100,000 tokens (`agents/pricing.py` implements it so an input
+that blew up would show in the logged cost; nothing here is near it).
+
+- **Validated before switching, on real data from the postings table**
+  (not the earlier hand-labeled set, which no longer exists): 12 real
+  digest-sourced descriptions as positives, plus a negative built from each
+  (a different role at the same company where the company had another
+  posting, otherwise a different company). Both models gave the same
+  accept/reject answer on all 24 cases, including the same 3 mismatches
+  against my labels -- on inspection these look like label noise ("Data
+  Scientist Lead" vs "Lead Data Scientist" at the same company is probably
+  the same role reworded), not a model difference. Work-location agreed on
+  9 of 10 comparable positives; the extracted description length was a
+  median 1.00x the 4.5 version (range 0.69-1.40x). Structured outputs work
+  and the model produced zero thinking tokens by default. Cost of that
+  part of the test: $0.020 versus $0.116.
+- **Measured end to end through the real code path** (Brave search, then
+  `capture_from_search`) on two real listings: both matched, no errors, total
+  Claude cost $0.0025 for both -- about $0.001 per matched listing versus
+  about $0.006 on Haiku 4.5 and about $0.034 before the harness removal.
+  The Brave search ($0.005 each) is now the larger share of a digest
+  listing's cost.
+- **`categorize.py` is deliberately still on Haiku 4.5.** The same A/B on 38
+  already-categorized postings (stratified across strong/mixed/weak) agreed
+  on only 26: Haiku 5.5 is stricter -- 5 strong -> mixed, 5 mixed -> weak,
+  1 mixed -> strong, 1 weak -> mixed. Reading the disagreements, 5.5's notes
+  weigh the preferences document harder (fully-remote-with-no-in-person,
+  fintech, dashboard-heavy roles, large companies), where 4.5's notes
+  sometimes talk themselves past a mismatch ("candidate explicitly accepts
+  remote roles"). Which one is right is a judgment about what the person
+  actually wants, not something a benchmark settles, and the dollar saving
+  is tiny (categorize was about $0.32 over 5 days), so the switch waits for
+  a human decision rather than quietly changing what lands in "New matches"
+  and the digest. To switch, change `CLAUDE_MODEL` in `categorize.py` and
+  give it the shared `agents/pricing.py` (it still has its own Haiku 4.5
+  constants).
+- **Pricing is per model now.** `usage_cost_usd(usage, model)` looks the
+  model up in `MODEL_PRICES` and raises on an unknown one rather than
+  quietly pricing it at another model's rates; changing a call site's model
+  means adding an entry there if it isn't already one.
+
 ---
 
 ## Sourcing strategy
@@ -1942,8 +1991,10 @@ Needed from Phase 1:
   has been removed as a dependency -- see "Fit categorization" and Phase
   4's "Moving Claude calls off the agent-SDK harness" for why (its CLI
   harness added ~20k tokens of fixed overhead to every call). Haiku for
-  all of them; `agents/pricing.py` holds the per-token prices and
-  computes cost from each response's `usage`.
+  all of them -- Haiku 5.5 for `fetchers.py`, Haiku 4.5 for `categorize.py`
+  (see Phase 4's "Switching capture calls to Haiku 5.5"). `agents/pricing.py`
+  holds the per-model, per-token prices and computes cost from each
+  response's `usage`.
 - A custom MCP server (FastMCP) exposing Adzuna search as a tool. No
   dedicated ATS lookup tools -- see Phase 1 for why.
 - `requests` (or `httpx`) for the Adzuna calls.
