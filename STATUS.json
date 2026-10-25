@@ -1,28 +1,28 @@
 {
   "categorize": {
     "status": "success",
-    "started_at": "2026-10-24T15:09:21.285193+00:00",
-    "finished_at": "2026-10-24T15:10:15.218386+00:00",
-    "items_processed": 17,
-    "items_new": 17,
+    "started_at": "2026-10-25T01:56:09.928284+00:00",
+    "finished_at": "2026-10-25T01:56:09.928298+00:00",
+    "items_processed": 0,
+    "items_new": 0,
     "llm_errors": 0,
-    "llm_cost_usd": 0.06266,
+    "llm_cost_usd": 0.0,
     "error_message": null
   },
   "digest": {
     "status": "success",
-    "started_at": "2026-10-24T15:10:16.179443+00:00",
-    "finished_at": "2026-10-24T15:10:18.117937+00:00",
-    "items_processed": 9,
-    "items_new": 9,
+    "started_at": "2026-10-25T01:56:11.067959+00:00",
+    "finished_at": "2026-10-25T01:56:14.320118+00:00",
+    "items_processed": 0,
+    "items_new": 0,
     "llm_errors": 0,
     "llm_cost_usd": 0.0,
     "error_message": null
   },
   "pipeline": {
     "status": "success",
-    "started_at": "2026-10-24T14:57:06.031252+00:00",
-    "finished_at": "2026-10-24T15:10:18.388872+00:00",
+    "started_at": "2026-10-25T01:55:46.538758+00:00",
+    "finished_at": "2026-10-25T01:56:14.978361+00:00",
     "items_processed": 4,
     "items_new": 0,
     "llm_errors": 0,
@@ -31,22 +31,22 @@
   },
   "discovery": {
     "status": "success",
-    "started_at": "2026-10-24T14:57:10.362410+00:00",
-    "finished_at": "2026-10-24T14:57:27.444223+00:00",
-    "items_processed": 7,
-    "items_new": 7,
+    "started_at": "2026-10-25T01:55:52.584275+00:00",
+    "finished_at": "2026-10-25T01:56:02.413086+00:00",
+    "items_processed": 0,
+    "items_new": 0,
     "llm_errors": 0,
-    "llm_cost_usd": 0.000817,
+    "llm_cost_usd": 0.0,
     "error_message": null
   },
   "digest_source": {
     "status": "success",
-    "started_at": "2026-10-24T14:57:29.767391+00:00",
-    "finished_at": "2026-10-24T15:09:19.328840+00:00",
-    "items_processed": 10,
-    "items_new": 10,
+    "started_at": "2026-10-25T01:56:06.263522+00:00",
+    "finished_at": "2026-10-25T01:56:07.116871+00:00",
+    "items_processed": 0,
+    "items_new": 0,
     "llm_errors": 0,
-    "llm_cost_usd": 0.11223469999999999,
+    "llm_cost_usd": 0.0,
     "error_message": null
   }
 }
