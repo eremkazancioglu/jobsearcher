@@ -861,6 +861,28 @@ tracker -- see "Phase 3" below for why that's split out.
     `usage` block against Haiku 4.5's published per-token pricing, since
     the raw SDK (unlike `claude_agent_sdk`'s `ResultMessage`) doesn't
     return a pre-computed `total_cost_usd`.
+  - **Label definitions and determinism (tuned against real data).**
+    Re-categorizing 42 stored postings under a restructured preferences
+    document (deal-breakers / strong preferences / location tiers) showed
+    two problems, both fixed in `categorize.py`. (1) The model wrote notes
+    calling something a "deal-breaker" and still labeled the posting
+    `mixed`, because the `weak` definition only said "a clear preference
+    deal-breaker" and a strong resume fit pulled it up; the definition now
+    says anything the preferences call a deal-breaker is `weak` regardless
+    of resume fit, and never `mixed` if its own note names one (postings
+    that moved weak -> mixed dropped from 9 to 2). (2) Labels weren't
+    reproducible -- the same posting flipped between runs at the default
+    temperature of 1.0, and each posting is judged once and never
+    revisited -- so the call now sets `temperature=0` via `extra_body` (the
+    SDK dropped the parameter; Haiku 4.5 still accepts it, Haiku 5.5
+    rejects it with a 400, so remove it if the model moves to 5.5).
+    Verified: two runs over the 42 postings gave identical labels on all
+    42. Known residual error: the model can rationalize past a
+    two-condition exception (a large fintech was labeled `strong` because
+    it states flexible PTO, though the preferences require a smaller
+    organization *and* stated PTO) -- one case in 42, deterministic now,
+    so it will repeat for that posting; tighten the preferences wording or
+    the prompt if it shows up more.
 - **Slack digest** (`digest/send_digest.py`) of newly strong/mixed
   postings, one message per run covering everything pending, not one
   message per posting. "Newly" is tracked with its own `digested_at`

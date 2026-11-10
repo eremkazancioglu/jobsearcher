@@ -96,9 +96,13 @@ CATEGORIZE_SCHEMA = {
                 "strong: qualified per the resume AND fits what the "
                 "preferences document wants. mixed: qualified but a "
                 "meaningful preference mismatch (or vice versa) -- still "
-                "worth a human glance. weak: not qualified, or a clear "
-                "preference deal-breaker (e.g. explicitly ruled-out "
-                "location/industry/role type)."
+                "worth a human glance. weak: not qualified, OR the posting "
+                "violates anything the preferences document calls a "
+                "deal-breaker (e.g. explicitly ruled-out location, "
+                "in-office frequency, industry, role type, or salary), no "
+                "matter how strong the resume fit is. Never label a "
+                "posting mixed if your own note calls something a "
+                "deal-breaker."
             ),
         },
         "match_notes": {
@@ -177,6 +181,15 @@ async def _categorize(resume: str, preferences: str, posting) -> dict:
         response = await _client.messages.create(
             model=CLAUDE_MODEL,
             max_tokens=CLAUDE_MAX_TOKENS,
+            # Each posting is judged once and never revisited, so a label
+            # shouldn't depend on sampling luck -- the same posting
+            # flipped between weak and mixed across two runs at the
+            # default temperature of 1.0 (see CLAUDE.md). Via extra_body
+            # because the SDK dropped the temperature parameter; Haiku 4.5
+            # still accepts it, but Haiku 5.5 rejects it with a 400
+            # ("temperature is deprecated for this model") -- remove this
+            # if CLAUDE_MODEL moves to 5.5.
+            extra_body={"temperature": 0},
             messages=[{"role": "user", "content": prompt}],
             output_config={"format": {"type": "json_schema", "schema": CATEGORIZE_SCHEMA}},
         )
