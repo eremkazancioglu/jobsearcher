@@ -1,28 +1,28 @@
 {
   "categorize": {
     "status": "success",
-    "started_at": "2026-11-13T18:57:41.143314+00:00",
-    "finished_at": "2026-11-13T18:58:20.851264+00:00",
-    "items_processed": 15,
-    "items_new": 15,
+    "started_at": "2026-11-14T03:48:41.333074+00:00",
+    "finished_at": "2026-11-14T03:48:51.092386+00:00",
+    "items_processed": 4,
+    "items_new": 4,
     "llm_errors": 0,
-    "llm_cost_usd": 0.05671200000000001,
+    "llm_cost_usd": 0.014799,
     "error_message": null
   },
   "digest": {
     "status": "success",
-    "started_at": "2026-11-13T18:58:21.750383+00:00",
-    "finished_at": "2026-11-13T18:58:23.711846+00:00",
-    "items_processed": 5,
-    "items_new": 5,
+    "started_at": "2026-11-14T03:48:51.975955+00:00",
+    "finished_at": "2026-11-14T03:48:52.285481+00:00",
+    "items_processed": 1,
+    "items_new": 1,
     "llm_errors": 0,
     "llm_cost_usd": 0.0,
     "error_message": null
   },
   "pipeline": {
     "status": "success",
-    "started_at": "2026-11-13T18:50:49.924855+00:00",
-    "finished_at": "2026-11-13T18:58:23.999757+00:00",
+    "started_at": "2026-11-14T03:44:12.541794+00:00",
+    "finished_at": "2026-11-14T03:48:52.357497+00:00",
     "items_processed": 4,
     "items_new": 0,
     "llm_errors": 0,
@@ -31,22 +31,22 @@
   },
   "discovery": {
     "status": "success",
-    "started_at": "2026-11-13T18:50:54.143146+00:00",
-    "finished_at": "2026-11-13T18:51:03.571499+00:00",
+    "started_at": "2026-11-14T03:44:18.125093+00:00",
+    "finished_at": "2026-11-14T03:44:19.922508+00:00",
     "items_processed": 1,
     "items_new": 1,
     "llm_errors": 0,
-    "llm_cost_usd": 0.000294,
+    "llm_cost_usd": 0.0,
     "error_message": null
   },
   "digest_source": {
     "status": "success",
-    "started_at": "2026-11-13T18:51:05.748155+00:00",
-    "finished_at": "2026-11-13T18:57:39.178580+00:00",
-    "items_processed": 14,
-    "items_new": 14,
+    "started_at": "2026-11-14T03:44:22.426896+00:00",
+    "finished_at": "2026-11-14T03:48:39.541611+00:00",
+    "items_processed": 3,
+    "items_new": 3,
     "llm_errors": 0,
-    "llm_cost_usd": 0.11258950000000001,
+    "llm_cost_usd": 0.028191,
     "error_message": null
   }
 }
