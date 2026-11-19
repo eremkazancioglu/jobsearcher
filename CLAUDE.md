@@ -1509,9 +1509,14 @@ changes address this, in order of expected impact:
    the other two changes do -- plausibly the largest single saving of the
    three, though unmeasured until real repeat-send data accumulates.
    `record_search_miss()`/`recent_search_miss()` in `db/db.py`;
-   `NO_MATCH_COOLDOWN_DAYS` (default 7, `DIGEST_NO_MATCH_COOLDOWN_DAYS` to
-   override) is deliberately configurable since 7 days is a starting
-   guess, not a measured optimum. Checked in `process_listing()` before
+   `NO_MATCH_COOLDOWN_DAYS` (default 2, `DIGEST_NO_MATCH_COOLDOWN_DAYS` to
+   override) is deliberately configurable. It was 7 originally and was cut
+   to 2 after a real miss: a LinkedIn "Staff Data Scientist" at Arine
+   searched fine hours later (mirror page ranked #1, confirmed) but had
+   been missed on the run just after it was posted, when no mirror page
+   was in the top 10 yet -- search-index lag on new listings, which a
+   7-day lockout turned into a week-long loss. Misses on fresh listings
+   are the least reliable kind. Checked in `process_listing()` before
    any search happens, alongside the existing `posting_exists()` check --
    conceptually the same idea (don't redo expensive work on something
    already resolved) applied to the negative case Adzuna's design never

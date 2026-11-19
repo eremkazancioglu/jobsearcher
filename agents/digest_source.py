@@ -61,9 +61,14 @@ FALLBACK_LOOKBACK_HOURS = 24  # same fallback send_digest.py uses on its first-e
 # unresolvable listing (recruiter repost, wrong company name, whatever the
 # reason) regularly gets re-sent across multiple digest emails, and
 # without this, each resend paid the full search+candidate-walk cost
-# again from scratch. Configurable since 7 days is a starting guess, not
-# a measured optimum.
-NO_MATCH_COOLDOWN_DAYS = int(os.environ.get("DIGEST_NO_MATCH_COOLDOWN_DAYS", "7"))
+# again from scratch. Kept short (2 days, was 7) because a miss on a
+# *new* listing is often just search-index lag: a real Arine "Staff Data
+# Scientist" role missed on the run right after it was posted (no mirror
+# page in Brave's top 10 yet), then ranked #1 and confirmed fine hours
+# later -- but the 7-day cooldown had already locked it out. With Haiku
+# 5.5 a retried miss costs a few cents, so a short cooldown is cheap.
+# Configurable since it's a judgment call, not a measured optimum.
+NO_MATCH_COOLDOWN_DAYS = int(os.environ.get("DIGEST_NO_MATCH_COOLDOWN_DAYS", "2"))
 
 # Known non-employer "company" values that sometimes show up in a digest
 # in place of the real (undisclosed) hiring employer -- staffing/
